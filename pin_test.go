@@ -292,7 +292,7 @@ func TestPinDashDashEndsFlagParsing(t *testing.T) {
 func TestPinExplicitBoolFlagFalse(t *testing.T) {
 	homeFor(t)
 
-	cfg, err := resolveConfig(newFlagSet(), []string{"--archive=false", "myorg"}, os.Stderr)
+	cfg, err := resolveConfig([]string{"--archive=false", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestPinExplicitBoolFlagFalse(t *testing.T) {
 	}
 
 	// And the default (flag absent) is still true.
-	cfg, err = resolveConfig(newFlagSet(), []string{"myorg"}, os.Stderr)
+	cfg, err = resolveConfig([]string{"myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -343,5 +343,46 @@ func TestPinArchiveFalseEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "archived: archive (") {
 		t.Fatalf("--archive=false must not plan an archive, got:\n%s", stdout.String())
+	}
+}
+
+// TestPinSingleDashLongFlagNoLongerAccepted records a deliberate difference
+// from the pre-port behavior: the old stdlib-flag implementation treated
+// "-root" and "--root" identically (an accident of that package's
+// leniency, contrary to this tool's own documented double-dash convention).
+// pflag does not: a single dash followed by more than one character is a
+// cluster of shorthand flags, so "-root" is now a parse error. Only "-v"
+// and "-h" (real, registered shorthands) still work single-dash.
+func TestPinSingleDashLongFlagNoLongerAccepted(t *testing.T) {
+	homeFor(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"-root", t.TempDir(), "myorg"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("run(-root ...) = %d, want %d (single-dash long flags are no longer accepted); stderr=%s", code, exitUsage, stderr.String())
+	}
+
+	// -v and -h remain valid single-dash shorthands.
+	code = run(context.Background(), []string{"-v", "-h"}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("run(-v -h) = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
+	}
+}
+
+// TestPinUsageErrorPrintedOnce records a deliberate fix, not a preserved
+// bug: the old stdlib-flag implementation printed a raw flag-parse error's
+// text twice on an unknown flag (once from its own internal failf, once
+// from run() after resolveConfig returned). The ported version prints it
+// exactly once.
+func TestPinUsageErrorPrintedOnce(t *testing.T) {
+	homeFor(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"--nope", "myorg"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("run(--nope) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if n := strings.Count(stderr.String(), "unknown flag: --nope"); n != 1 {
+		t.Fatalf("expected the error text exactly once, got %d occurrences:\n%s", n, stderr.String())
 	}
 }

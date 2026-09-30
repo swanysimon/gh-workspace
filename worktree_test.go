@@ -75,7 +75,7 @@ func TestWorktreeAddClonesAndAddsWorktree(t *testing.T) {
 	wtPath := filepath.Join(t.TempDir(), "repo1-feature")
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", root, "-protocol", "https", "myorg/repo1", "feature", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", root, "--protocol", "https", "myorg/repo1", "feature", wtPath}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
 	}
@@ -130,7 +130,7 @@ func TestWorktreeAddRefusesArchivedAfterCloning(t *testing.T) {
 	wtPath := filepath.Join(t.TempDir(), "repo1-main")
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", root, "-protocol", "https", "myorg/repo1", "main", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", root, "--protocol", "https", "myorg/repo1", "main", wtPath}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("expected failure for an archived repo")
 	}
@@ -178,7 +178,7 @@ func TestWorktreeAddSkipsCloneWhenAlreadyPresent(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "repo1-main")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "feature", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "feature", wtPath}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
 	}
@@ -207,7 +207,7 @@ func TestWorktreeRemove(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeRemove(context.Background(), []string{"-root", cfg.Root, "testorg/repo1", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, "testorg/repo1", wtPath}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeRemove = %d, stderr=%s", code, stderr.String())
 	}
@@ -237,7 +237,7 @@ func TestWorktreeRemoveRefusesDirtyWithoutForce(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeRemove(context.Background(), []string{"-root", cfg.Root, "testorg/repo1", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, "testorg/repo1", wtPath}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("expected failure removing a dirty worktree without --force")
 	}
@@ -247,7 +247,7 @@ func TestWorktreeRemoveRefusesDirtyWithoutForce(t *testing.T) {
 
 	var stdout2, stderr2 bytes.Buffer
 	// Flags after the positionals must be honoured too.
-	code2 := cmdWorktreeRemove(context.Background(), []string{"-root", cfg.Root, "testorg/repo1", wtPath, "--force"}, &stdout2, &stderr2)
+	code2 := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, "testorg/repo1", wtPath, "--force"}, &stdout2, &stderr2)
 	if code2 != exitSuccess {
 		t.Fatalf("cmdWorktreeRemove --force = %d, stderr=%s", code2, stderr2.String())
 	}
@@ -274,7 +274,7 @@ func TestWorktreeList(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeList(context.Background(), []string{"-root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
+	code := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
 	}
@@ -283,7 +283,7 @@ func TestWorktreeList(t *testing.T) {
 	}
 
 	var stdout2, stderr2 bytes.Buffer
-	code2 := cmdWorktreeList(context.Background(), []string{"-root", cfg.Root, "testorg"}, &stdout2, &stderr2)
+	code2 := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg"}, &stdout2, &stderr2)
 	if code2 != exitSuccess {
 		t.Fatalf("cmdWorktreeList (org) = %d, stderr=%s", code2, stderr2.String())
 	}
@@ -321,7 +321,7 @@ func TestRunDispatchesToWorktree(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"worktree", "list", "-root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"worktree", "list", "--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("run(worktree list ...) = %d, stderr=%s", code, stderr.String())
 	}
@@ -365,7 +365,7 @@ func TestWorktreeRelativePathResolvesAgainstCwd(t *testing.T) {
 	t.Chdir(cwd)
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "feature", "wt"}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "feature", "wt"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
 	}
@@ -377,7 +377,7 @@ func TestWorktreeRelativePathResolvesAgainstCwd(t *testing.T) {
 	}
 
 	var stdout2, stderr2 bytes.Buffer
-	code = cmdWorktreeRemove(context.Background(), []string{"-root", cfg.Root, "testorg/repo1", "wt"}, &stdout2, &stderr2)
+	code = cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, "testorg/repo1", "wt"}, &stdout2, &stderr2)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeRemove = %d, stderr=%s", code, stderr2.String())
 	}
@@ -416,7 +416,7 @@ func TestWorktreeAddRefusesWhileLockHeld(t *testing.T) {
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "main", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "main", wtPath}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("worktree add succeeded despite a held lock")
 	}
@@ -449,7 +449,7 @@ func TestWorktreeAddFetchesBranchCreatedAfterClone(t *testing.T) {
 	stubGhRepoView(t, repo)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "late", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "late", wtPath}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
 	}
@@ -477,7 +477,7 @@ func TestWorktreeAddCreatesMissingBranch(t *testing.T) {
 	stubGhRepoView(t, repo)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "brand-new", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "brand-new", wtPath}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
 	}
@@ -506,7 +506,7 @@ func TestWorktreeAddRejectsInvalidBranchName(t *testing.T) {
 	stubGhRepoView(t, repo)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "bad..name", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "bad..name", wtPath}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("expected failure for an invalid branch name")
 	}
@@ -551,7 +551,7 @@ func TestWorktreeAddDoesNotRecloneLocallyArchivedRepo(t *testing.T) {
 	stubGhRepoView(t, repo)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "testorg/repo1", "main", wtPath}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "testorg/repo1", "main", wtPath}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("expected failure for an archived repo")
 	}
@@ -580,14 +580,14 @@ func TestWorktreeIgnoresUnrelatedEnv(t *testing.T) {
 	t.Setenv("GH_ORG_CLONE_ARCHIVE", "maybe")
 
 	var stdout, stderr bytes.Buffer
-	if code := cmdWorktreeList(context.Background(), []string{"-root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitSuccess {
+	if code := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitSuccess {
 		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
 	}
 
 	// A worktree setting with a bad value still fails.
 	t.Setenv("GH_ORG_CLONE_TIMEOUT", "soon")
 	stderr.Reset()
-	if code := cmdWorktreeList(context.Background(), []string{"-root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitUsage {
+	if code := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitUsage {
 		t.Fatalf("cmdWorktreeList with bad GH_ORG_CLONE_TIMEOUT = %d, want %d", code, exitUsage)
 	}
 }
@@ -604,7 +604,7 @@ func TestWorktreeAddAppliesTimeoutToGhLookup(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := cmdWorktreeAdd(context.Background(), []string{"-root", t.TempDir(), "--timeout", "50ms", "testorg/repo1", "main", t.TempDir()}, &stdout, &stderr)
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", t.TempDir(), "--timeout", "50ms", "testorg/repo1", "main", t.TempDir()}, &stdout, &stderr)
 	if code != exitRuntimeFail {
 		t.Fatalf("cmdWorktreeAdd = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 	}

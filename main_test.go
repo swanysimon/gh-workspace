@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,19 +12,13 @@ import (
 	"time"
 )
 
-func newFlagSet() *flag.FlagSet {
-	fs := flag.NewFlagSet("gh-org-clone", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	return fs
-}
-
 func TestConfigVerboseAliases(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
 	for _, flag := range []string{"-v", "--verbose"} {
 		t.Run(flag, func(t *testing.T) {
-			cfg, err := resolveConfig(newFlagSet(), []string{flag, "myorg"}, os.Stderr)
+			cfg, err := resolveConfig([]string{flag, "myorg"}, os.Stderr)
 			if err != nil {
 				t.Fatalf("resolveConfig: %v", err)
 			}
@@ -40,7 +33,7 @@ func TestConfigDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
-	cfg, err := resolveConfig(newFlagSet(), []string{"myorg"}, os.Stderr)
+	cfg, err := resolveConfig([]string{"myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -80,7 +73,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (a) file beats default: concurrency, protocol, maxRepos come from file.
-	cfg, err := resolveConfig(newFlagSet(), []string{"-config", configPath, "myorg"}, os.Stderr)
+	cfg, err := resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -95,7 +88,7 @@ func TestConfigPrecedence(t *testing.T) {
 	// (b) env beats file: override concurrency and protocol via env.
 	t.Setenv("GH_ORG_CLONE_CONCURRENCY", "6")
 	t.Setenv("GH_ORG_CLONE_PROTOCOL", "ssh")
-	cfg, err = resolveConfig(newFlagSet(), []string{"-config", configPath, "myorg"}, os.Stderr)
+	cfg, err = resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -108,7 +101,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (c) explicit flag beats env.
-	cfg, err = resolveConfig(newFlagSet(), []string{"-config", configPath, "-concurrency", "9", "myorg"}, os.Stderr)
+	cfg, err = resolveConfig([]string{"--config", configPath, "--concurrency", "9", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -121,7 +114,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (d) a flag not passed must not clobber the file's value (the fs.Visit regression).
-	cfg, err = resolveConfig(newFlagSet(), []string{"-config", configPath, "-include-forks", "myorg"}, os.Stderr)
+	cfg, err = resolveConfig([]string{"--config", configPath, "--include-forks", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -152,16 +145,16 @@ func TestConfigRejects(t *testing.T) {
 	}{
 		{"no positional arg", []string{}},
 		{"two positional args", []string{"a", "b"}},
-		{"bad concurrency", []string{"-concurrency", "0", "myorg"}},
-		{"bad protocol", []string{"-protocol", "ftp", "myorg"}},
-		{"bad timeout", []string{"-timeout", "banana", "myorg"}},
-		{"negative max-repos", []string{"-max-repos", "-1", "myorg"}},
-		{"malformed config file", []string{"-config", badFile, "myorg"}},
-		{"unknown config key", []string{"-config", unknownKeyFile, "myorg"}},
+		{"bad concurrency", []string{"--concurrency", "0", "myorg"}},
+		{"bad protocol", []string{"--protocol", "ftp", "myorg"}},
+		{"bad timeout", []string{"--timeout", "banana", "myorg"}},
+		{"negative max-repos", []string{"--max-repos", "-1", "myorg"}},
+		{"malformed config file", []string{"--config", badFile, "myorg"}},
+		{"unknown config key", []string{"--config", unknownKeyFile, "myorg"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := resolveConfig(newFlagSet(), tc.args, os.Stderr); err == nil {
+			if _, err := resolveConfig(tc.args, os.Stderr); err == nil {
 				t.Fatalf("expected an error, got none")
 			}
 		})
@@ -228,7 +221,7 @@ func TestRunEndToEnd(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"-root", root, "-protocol", "https", "testorg"}, &stdout, &stderr)
+	code := run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
 	}
@@ -296,7 +289,7 @@ func TestRunEndToEnd(t *testing.T) {
 	ghCalls.Store(0)
 	gitCalls.Store(0)
 	var stdout2, stderr2 bytes.Buffer
-	code2 := run(ctx, []string{"-root", root, "-protocol", "https", "testorg"}, &stdout2, &stderr2)
+	code2 := run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout2, &stderr2)
 	if code2 != exitSuccess {
 		t.Fatalf("second run() = %d, stderr=%s", code2, stderr2.String())
 	}
@@ -316,7 +309,7 @@ func TestRunNoGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", t.TempDir(), "testorg"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"--root", t.TempDir(), "testorg"}, &stdout, &stderr)
 	if code != exitRuntimeFail {
 		t.Fatalf("run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 	}
@@ -336,7 +329,7 @@ func TestRunLockHeld(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", root, "testorg"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"--root", root, "testorg"}, &stdout, &stderr)
 	if code == exitSuccess {
 		t.Fatalf("run() succeeded despite a held lock")
 	}
@@ -370,7 +363,7 @@ func TestRunDryRun(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", root, "-protocol", "https", "-dry-run", "testorg"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"--root", root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
 	}
@@ -424,7 +417,7 @@ func TestRunDryRunPlansRenameWithoutPerformingIt(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", cfg.Root, "-protocol", "https", "-dry-run", "testorg"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
 	}
@@ -478,7 +471,7 @@ func TestRunPrepassErrorsFailTheRun(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", t.TempDir(), "-protocol", "https", "-dry-run", "testorg"}, &stdout, &stderr)
+	code := run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitRuntimeFail {
 		t.Fatalf("run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 	}
@@ -504,7 +497,7 @@ func TestRunWarnsWhenListingMayBeTruncated(t *testing.T) {
 		warn     bool
 	}{{"2", true}, {"3", false}} {
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"-root", t.TempDir(), "-protocol", "https", "-dry-run", "-max-repos", tc.maxRepos, "testorg"}, &stdout, &stderr)
+		code := run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "--max-repos", tc.maxRepos, "testorg"}, &stdout, &stderr)
 		if code != exitSuccess {
 			t.Fatalf("max-repos=%s: run() = %d, stderr=%s", tc.maxRepos, code, stderr.String())
 		}
@@ -514,39 +507,11 @@ func TestRunWarnsWhenListingMayBeTruncated(t *testing.T) {
 	}
 }
 
-func TestParseInterspersed(t *testing.T) {
-	cases := []struct {
-		args    []string
-		wantPos []string
-		wantV   bool
-		wantR   string
-	}{
-		{[]string{"org"}, []string{"org"}, false, ""},
-		{[]string{"-v", "org"}, []string{"org"}, true, ""},
-		{[]string{"org", "-v"}, []string{"org"}, true, ""},
-		{[]string{"a", "--root", "/x", "b", "--verbose", "c"}, []string{"a", "b", "c"}, true, "/x"},
-		{[]string{"a", "--", "-b", "-v"}, []string{"a", "-b", "-v"}, false, ""},
-	}
-	for _, tc := range cases {
-		fs := flag.NewFlagSet("t", flag.ContinueOnError)
-		v := fs.Bool("verbose", false, "")
-		fs.BoolVar(v, "v", false, "")
-		r := fs.String("root", "", "")
-		pos, err := parseInterspersed(fs, tc.args)
-		if err != nil {
-			t.Fatalf("%v: %v", tc.args, err)
-		}
-		if strings.Join(pos, "|") != strings.Join(tc.wantPos, "|") || *v != tc.wantV || *r != tc.wantR {
-			t.Fatalf("%v: got pos=%q v=%v root=%q, want pos=%q v=%v root=%q", tc.args, pos, *v, *r, tc.wantPos, tc.wantV, tc.wantR)
-		}
-	}
-}
-
 func TestConfigFlagsAfterOrg(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
-	cfg, err := resolveConfig(newFlagSet(), []string{"myorg", "--dry-run", "--concurrency", "3"}, os.Stderr)
+	cfg, err := resolveConfig([]string{"myorg", "--dry-run", "--concurrency", "3"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}

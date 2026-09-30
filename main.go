@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/spf13/pflag"
 )
 
 const (
@@ -59,17 +60,19 @@ func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// errHelpRequested is resolveConfig/resolveWorktreeConfig's sentinel for
+// "-h/--help was passed", replacing flag.ErrHelp: pflag.FlagSet has no
+// built-in help handling (that's cobra's job), so -h/--help is a plain bool
+// flag we register and check ourselves on every FlagSet.
+var errHelpRequested = errors.New("help requested")
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "worktree" {
 		return runWorktree(ctx, args[1:], stdout, stderr)
 	}
 
-	fs := flag.NewFlagSet("gh-org-clone", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { printUsage(stderr) }
-
-	cfg, err := resolveConfig(fs, args, stderr)
-	if errors.Is(err, flag.ErrHelp) {
+	cfg, err := resolveConfig(args, stderr)
+	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
 	if err != nil {
@@ -640,16 +643,20 @@ func printFlagTable(w io.Writer, entries []flagHelp) {
 // subcommand's help can't drift from what it accepts. fs's own defaults are
 // zero values (real defaults are resolved later, after env and config), so
 // the shown default and value type come from usageFlags when it knows the
-// flag.
-func flagHelpsFromSet(fs *flag.FlagSet, d config) []flagHelp {
+// flag. The "help" flag every FlagSet carries (see newFlagSet) is
+// deliberately excluded: it was never listed in the flags table before the
+// pflag port, and it isn't now either.
+func flagHelpsFromSet(fs *pflag.FlagSet, d config) []flagHelp {
 	known := map[string]flagHelp{}
 	for _, h := range usageFlags(d) {
 		known[h.long] = h
 	}
 	var out []flagHelp
-	fs.VisitAll(func(f *flag.Flag) {
-		hint, usage := flag.UnquoteUsage(f)
-		h := flagHelp{long: f.Name, valueHint: hint, usage: usage}
+	fs.VisitAll(func(f *pflag.Flag) {
+		if f.Name == "help" {
+			return
+		}
+		h := flagHelp{long: f.Name, shorthand: f.Shorthand, valueHint: f.Value.Type(), usage: f.Usage}
 		if k, ok := known[f.Name]; ok {
 			h.valueHint, h.def, h.quoteDef = k.valueHint, k.def, k.quoteDef
 		}
@@ -658,10 +665,31 @@ func flagHelpsFromSet(fs *flag.FlagSet, d config) []flagHelp {
 	return out
 }
 
+// newFlagSet builds the pflag.FlagSet every resolveConfig/resolveWorktreeConfig
+// caller starts from: output silenced (every error or usage message below is
+// printed exactly once, by us, never by pflag itself), plus the "help" flag
+// every command accepts. pflag has no built-in -h/--help handling -- that is
+// cobra's job, and this codebase doesn't build a cobra.Command tree yet (see
+// AIDEV.md) -- so it is registered like any other flag and checked
+// explicitly after Parse.
+func newFlagSet(name string) (*pflag.FlagSet, *bool) {
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.BoolP("help", "h", false, "show help")
+	return fs, help
+}
+
 // resolveConfig applies flags > env > file > defaults. fs.Visit reports only
 // flags the caller actually typed, so an unset flag never clobbers a value
 // already set by the env or the config file.
-func resolveConfig(fs *flag.FlagSet, args []string, stderr io.Writer) (config, error) {
+//
+// Single-dash long flags (e.g. "-root", accepted by the old stdlib-flag
+// implementation purely as an accident of that package's leniency, contrary
+// to this tool's own documented double-dash convention) are no longer
+// accepted: pflag treats a single dash followed by more than one character
+// as a cluster of shorthand flags, not a long flag. This is a deliberate,
+// intentional difference -- see AIDEV.md.
+func resolveConfig(args []string, stderr io.Writer) (config, error) {
 	var (
 		root         string
 		concurrency  int
@@ -676,6 +704,7 @@ func resolveConfig(fs *flag.FlagSet, args []string, stderr io.Writer) (config, e
 		yes          bool
 		configPath   string
 	)
+	fs, help := newFlagSet("gh-org-clone")
 	fs.StringVar(&root, "root", "", "root directory for cloned orgs")
 	fs.IntVar(&concurrency, "concurrency", 0, "number of repos to sync in parallel")
 	fs.StringVar(&timeoutStr, "timeout", "", "per-subprocess timeout")
@@ -685,17 +714,30 @@ func resolveConfig(fs *flag.FlagSet, args []string, stderr io.Writer) (config, e
 	fs.BoolVar(&archive, "archive", false, "tarball archived repos and remove their clones")
 	fs.BoolVar(&force, "force", false, "ignore stored pushedAt and re-sync every repo")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the planned actions without doing them")
-	fs.BoolVar(&verbose, "v", false, "verbose output")
-	fs.BoolVar(&verbose, "verbose", false, "verbose output")
+	fs.BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	fs.BoolVar(&yes, "yes", false, "don't prompt before removing worktrees to archive a repo they belong to")
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 
-	positional, err := parseInterspersed(fs, args)
-	if err != nil {
+	// A raw parse failure (unknown flag, malformed value) and a bad
+	// positional count both show the full usage block exactly once, then
+	// (from run(), after this returns) the error exactly once. The old
+	// stdlib-flag implementation printed a parse failure's error text twice
+	// -- once from its own internal failf, once from run() -- and never
+	// showed the usage block for a semantic validateConfig failure (e.g. a
+	// bad --protocol value) at all. Both are deliberate fixes, not
+	// preserved bugs -- see AIDEV.md.
+	if err := fs.Parse(args); err != nil {
+		printUsage(stderr)
 		return config{}, err
 	}
+	if *help {
+		printUsage(stderr)
+		return config{}, errHelpRequested
+	}
+
+	positional := fs.Args()
 	if len(positional) != 1 {
-		fs.Usage()
+		printUsage(stderr)
 		return config{}, fmt.Errorf("expected exactly one org argument, got %d", len(positional))
 	}
 
@@ -738,7 +780,7 @@ func resolveConfig(fs *flag.FlagSet, args []string, stderr io.Writer) (config, e
 	}
 
 	var flagErr error
-	fs.Visit(func(f *flag.Flag) {
+	fs.Visit(func(f *pflag.Flag) {
 		switch f.Name {
 		case "root":
 			cfg.Root = root
@@ -775,28 +817,6 @@ func resolveConfig(fs *flag.FlagSet, args []string, stderr io.Writer) (config, e
 		return config{}, err
 	}
 	return cfg, nil
-}
-
-// parseInterspersed parses flags wherever they appear among the positional
-// args, as gh (and cobra) do, rather than stopping at the first positional
-// arg like the standard flag package. A "--" still ends flag parsing, so a
-// positional arg that starts with "-" can be passed after it.
-func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
-	var positional []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			return nil, err
-		}
-		rest := fs.Args()
-		if len(rest) == 0 {
-			return positional, nil
-		}
-		if consumed := len(args) - len(rest); consumed > 0 && args[consumed-1] == "--" {
-			return append(positional, rest...), nil
-		}
-		positional = append(positional, rest[0])
-		args = rest[1:]
-	}
 }
 
 func resolveConfigPath(flagValue string) string {
