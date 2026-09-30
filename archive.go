@@ -65,7 +65,7 @@ func confirmAndRemoveWorktrees(ctx context.Context, cfg config, repo ghRepo, dir
 		worktrees[i] = worktreeStatus{Path: p, Dirty: dirty}
 	}
 
-	ok, err := confirmArchiveWithWorktrees(cfg, repo.Name, worktrees)
+	ok, err := cfg.Deps.confirm(cfg, repo.Name, worktrees)
 	if err != nil {
 		return fmt.Errorf("confirming archive of %q with live worktrees: %w", repo.Name, err)
 	}
@@ -74,7 +74,7 @@ func confirmAndRemoveWorktrees(ctx context.Context, cfg config, repo ghRepo, dir
 	}
 
 	for _, w := range worktrees {
-		if _, err := runner(ctx, dir, "git", "worktree", "remove", "--force", "--", w.Path); err != nil {
+		if _, err := cfg.Deps.exec(ctx, dir, "git", "worktree", "remove", "--force", "--", w.Path); err != nil {
 			return fmt.Errorf("removing worktree %q of %q: %w", w.Path, repo.Name, err)
 		}
 	}

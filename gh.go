@@ -37,7 +37,7 @@ type ghRefName struct {
 // this tool) or --source (forks are filtered client-side so -v can report
 // why a repo was skipped).
 func listRepos(ctx context.Context, cfg config) ([]ghRepo, error) {
-	out, err := runner(ctx, "", "gh", "repo", "list", cfg.Org,
+	out, err := cfg.Deps.exec(ctx, "", "gh", "repo", "list", cfg.Org,
 		"--limit", strconv.Itoa(cfg.MaxRepos),
 		"--json", ghJSONFields,
 	)
@@ -55,8 +55,8 @@ func listRepos(ctx context.Context, cfg config) ([]ghRepo, error) {
 // getRepo looks up a single repo by "<org>/<repo>", for commands (worktree
 // add) that operate on one repo instead of an org's entire listing. Fields
 // match ghJSONFields exactly so the two call sites decode identically.
-func getRepo(ctx context.Context, nameWithOwner string) (ghRepo, error) {
-	out, err := runner(ctx, "", "gh", "repo", "view", nameWithOwner, "--json", ghJSONFields)
+func getRepo(ctx context.Context, cfg config, nameWithOwner string) (ghRepo, error) {
+	out, err := cfg.Deps.exec(ctx, "", "gh", "repo", "view", nameWithOwner, "--json", ghJSONFields)
 	if err != nil {
 		return ghRepo{}, fmt.Errorf("looking up repo %q: %w", nameWithOwner, err)
 	}

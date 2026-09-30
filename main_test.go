@@ -47,7 +47,23 @@ func TestConfigDefaults(t *testing.T) {
 
 	want := defaultConfig()
 	want.Org = "myorg"
-	if cfg != want {
+	// config can no longer be compared whole with !=: Deps holds function
+	// values (see deps.go), and a struct type with a function-typed field is
+	// not a comparable type at all, regardless of the values inside it.
+	// Compare every other field instead; Deps' own wiring is exercised by
+	// the tests that set cfg.Deps.exec/confirm directly.
+	if cfg.Org != want.Org ||
+		cfg.Root != want.Root ||
+		cfg.Concurrency != want.Concurrency ||
+		cfg.Timeout != want.Timeout ||
+		cfg.MaxRepos != want.MaxRepos ||
+		cfg.Protocol != want.Protocol ||
+		cfg.IncludeForks != want.IncludeForks ||
+		cfg.Archive != want.Archive ||
+		cfg.Force != want.Force ||
+		cfg.DryRun != want.DryRun ||
+		cfg.Verbose != want.Verbose ||
+		cfg.Yes != want.Yes {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 }
@@ -197,11 +213,11 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := runner
-	t.Cleanup(func() { runner = old })
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
 
 	var ghCalls, gitCalls atomic.Int64
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			ghCalls.Add(1)
 			return reposJSON, nil
@@ -343,9 +359,9 @@ func TestRunDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return reposJSON, nil
 		}
@@ -398,9 +414,9 @@ func TestRunDryRunPlansRenameWithoutPerformingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return reposJSON, nil
 		}
@@ -441,9 +457,9 @@ func stubGhRepoList(t *testing.T, repos []ghRepo) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return reposJSON, nil
 		}

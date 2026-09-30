@@ -199,7 +199,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 
 	gctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	repo, err := getRepo(gctx, org+"/"+repoName)
+	repo, err := getRepo(gctx, cfg, org+"/"+repoName)
 	cancel()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -293,12 +293,12 @@ func worktreeAddArgs(ctx context.Context, cfg config, dir, path, branch, default
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	if _, err := runner(ctx, dir, "git", "check-ref-format", "--branch", branch); err != nil {
+	if _, err := cfg.Deps.exec(ctx, dir, "git", "check-ref-format", "--branch", branch); err != nil {
 		return nil, "", fmt.Errorf("%q is not a valid branch name", branch)
 	}
 
 	refExists := func(ref string) bool {
-		_, err := runner(ctx, dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+		_, err := cfg.Deps.exec(ctx, dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 		return err == nil
 	}
 	if refExists("refs/heads/"+branch) || refExists("refs/remotes/origin/"+branch) {

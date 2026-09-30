@@ -225,13 +225,12 @@ func TestArchiveAdoptsExisting(t *testing.T) {
 		t.Fatalf("initial archiveRepo: %v", err)
 	}
 
-	old := runner
+	real := cfg.Deps.exec
 	invoked := false
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		invoked = true
-		return old(ctx, dir, name, args...)
+		return real(ctx, dir, name, args...)
 	}
-	t.Cleanup(func() { runner = old })
 
 	got, _, err := archiveRepo(context.Background(), cfg, repo)
 	if err != nil {
@@ -248,12 +247,10 @@ func TestArchiveAdoptsExisting(t *testing.T) {
 func TestArchiveWithWorktreeRefusesByDefault(t *testing.T) {
 	cfg, repo, dir := setupArchiveRepo(t)
 
-	old := confirmArchiveWithWorktrees
-	t.Cleanup(func() { confirmArchiveWithWorktrees = old })
 	// Simulate "no terminal, cfg.Yes not set" without going through the real
 	// confirm function: stub it to answer exactly what
 	// defaultConfirmArchiveWithWorktrees would answer in that situation.
-	confirmArchiveWithWorktrees = func(cfg config, repoName string, wt []worktreeStatus) (bool, error) {
+	cfg.Deps.confirm = func(cfg config, repoName string, wt []worktreeStatus) (bool, error) {
 		return false, nil
 	}
 
@@ -285,11 +282,9 @@ func TestArchiveWithWorktreeRemovesOnConfirm(t *testing.T) {
 		t.Fatalf("git worktree add: %v", err)
 	}
 
-	old := confirmArchiveWithWorktrees
-	t.Cleanup(func() { confirmArchiveWithWorktrees = old })
 	var gotRepoName string
 	var gotCount int
-	confirmArchiveWithWorktrees = func(cfg config, repoName string, wt []worktreeStatus) (bool, error) {
+	cfg.Deps.confirm = func(cfg config, repoName string, wt []worktreeStatus) (bool, error) {
 		gotRepoName = repoName
 		gotCount = len(wt)
 		return true, nil
@@ -321,9 +316,10 @@ func TestArchiveWithWorktreeCfgYesSkipsPrompt(t *testing.T) {
 		t.Fatalf("git worktree add: %v", err)
 	}
 
-	old := confirmArchiveWithWorktrees
-	t.Cleanup(func() { confirmArchiveWithWorktrees = old })
-	confirmArchiveWithWorktrees = defaultConfirmArchiveWithWorktrees
+	// cfg.Deps.confirm is already defaultConfirmArchiveWithWorktrees (the
+	// zero-value config uses defaultDeps via setupArchiveRepo); cfg.Yes
+	// short-circuits it above os.Stdin, so this is exercising the real
+	// production seam end to end.
 
 	if _, _, err := archiveRepo(context.Background(), cfg, repo); err != nil {
 		t.Fatalf("archiveRepo: %v", err)

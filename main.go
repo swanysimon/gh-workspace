@@ -42,6 +42,7 @@ type config struct {
 	DryRun       bool
 	Verbose      bool
 	Yes          bool // skip the archive-with-live-worktrees confirmation prompt
+	Deps         deps // subprocess + confirm-prompt seams; see deps.go
 }
 
 type fileConfig struct {
@@ -554,6 +555,7 @@ func defaultConfig() config {
 		Protocol:     "ssh",
 		IncludeForks: false,
 		Archive:      true,
+		Deps:         defaultDeps(),
 	}
 }
 

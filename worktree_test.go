@@ -62,9 +62,9 @@ func TestWorktreeAddClonesAndAddsWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return repoJSON, nil
 		}
@@ -117,9 +117,9 @@ func TestWorktreeAddRefusesArchivedAfterCloning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return repoJSON, nil
 		}
@@ -165,10 +165,10 @@ func TestWorktreeAddSkipsCloneWhenAlreadyPresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
 	var ghCalls int
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			ghCalls++
 			return repoJSON, nil
@@ -352,9 +352,9 @@ func TestWorktreeRelativePathResolvesAgainstCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return repoJSON, nil
 		}
@@ -405,9 +405,9 @@ func TestWorktreeAddRefusesWhileLockHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return repoJSON, nil
 		}
@@ -523,9 +523,9 @@ func stubGhRepoView(t *testing.T, repo ghRepo) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			return repoJSON, nil
 		}
@@ -593,9 +593,9 @@ func TestWorktreeIgnoresUnrelatedEnv(t *testing.T) {
 }
 
 func TestWorktreeAddAppliesTimeoutToGhLookup(t *testing.T) {
-	old := runner
-	t.Cleanup(func() { runner = old })
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name == "gh" {
 			<-ctx.Done() // a hung gh must be cut off by --timeout
 			return nil, ctx.Err()

@@ -13,15 +13,12 @@ import (
 // worktree at once would interleave their prompts into unreadable output.
 var confirmMu sync.Mutex
 
-// confirmArchiveWithWorktrees is a seam so tests can answer without a real
-// terminal. archiveRepo calls it, never os.Stdin directly.
-var confirmArchiveWithWorktrees = defaultConfirmArchiveWithWorktrees
-
-// defaultConfirmArchiveWithWorktrees never blocks a non-interactive run:
-// cfg.Yes answers "yes" unconditionally (for scripted use where the caller
-// has already decided), and anything else answers "no" unless stdin is a
-// terminal, so cron/CI runs fail closed instead of hanging forever on a
-// prompt nobody can see.
+// defaultConfirmArchiveWithWorktrees is confirmDefault's production value
+// (see deps.go). It never blocks a non-interactive run: cfg.Yes answers
+// "yes" unconditionally (for scripted use where the caller has already
+// decided), and anything else answers "no" unless stdin is a terminal, so
+// cron/CI runs fail closed instead of hanging forever on a prompt nobody
+// can see.
 func defaultConfirmArchiveWithWorktrees(cfg config, repoName string, worktrees []worktreeStatus) (bool, error) {
 	if cfg.Yes {
 		return true, nil

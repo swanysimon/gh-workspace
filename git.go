@@ -12,11 +12,6 @@ import (
 	"time"
 )
 
-// runner is the single seam for driving subprocesses. Tests override it to
-// fake gh (whose GraphQL responses cannot be produced offline); git tests run
-// the real binary instead.
-var runner = execCommand
-
 func execCommand(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
@@ -39,7 +34,7 @@ func execCommand(ctx context.Context, dir, name string, args ...string) ([]byte,
 func runGit(ctx context.Context, cfg config, dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	return runner(ctx, dir, "git", args...)
+	return cfg.Deps.exec(ctx, dir, "git", args...)
 }
 
 type archiveTag struct {
@@ -64,7 +59,7 @@ func cloneRepo(ctx context.Context, cfg config, repo ghRepo) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	_, err := runner(ctx, "", "git", "clone", "--quiet", "--no-single-branch", "--origin", "origin", "--", url, tmp)
+	_, err := cfg.Deps.exec(ctx, "", "git", "clone", "--quiet", "--no-single-branch", "--origin", "origin", "--", url, tmp)
 	if err != nil {
 		os.RemoveAll(tmp)
 		return fmt.Errorf("cloning %q: %w", repo.Name, err)
@@ -82,7 +77,7 @@ func fetchRepo(ctx context.Context, cfg config, dir string) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	_, err := runner(ctx, dir, "git", "fetch", "--quiet", "--all", "--tags", "--prune", "--prune-tags")
+	_, err := cfg.Deps.exec(ctx, dir, "git", "fetch", "--quiet", "--all", "--tags", "--prune", "--prune-tags")
 	if err != nil {
 		return fmt.Errorf("fetching %s: %w", dir, err)
 	}
@@ -93,7 +88,7 @@ func isDirty(ctx context.Context, cfg config, dir string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	out, err := runner(ctx, dir, "git", "status", "--porcelain")
+	out, err := cfg.Deps.exec(ctx, dir, "git", "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("checking status of %s: %w", dir, err)
 	}
@@ -125,7 +120,7 @@ func updateWorktree(ctx context.Context, cfg config, dir, defaultBranch string) 
 
 	tctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	branchOut, err := runner(tctx, dir, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	branchOut, err := cfg.Deps.exec(tctx, dir, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return "HEAD is detached, left untouched", false, nil
 	}
@@ -136,7 +131,7 @@ func updateWorktree(ctx context.Context, cfg config, dir, defaultBranch string) 
 
 	mctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
-	if _, err := runner(mctx, dir, "git", "merge", "--ff-only", "--quiet", "refs/remotes/origin/"+defaultBranch); err != nil {
+	if _, err := cfg.Deps.exec(mctx, dir, "git", "merge", "--ff-only", "--quiet", "refs/remotes/origin/"+defaultBranch); err != nil {
 		return fmt.Sprintf("fast-forward merge failed: %v", err), false, nil
 	}
 	return "", false, nil
@@ -150,12 +145,12 @@ func headInfo(ctx context.Context, cfg config, dir, defaultBranch string) (sha s
 
 	ref := "HEAD"
 	if defaultBranch != "" {
-		if out, rerr := runner(ctx, dir, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+defaultBranch+"^{commit}"); rerr == nil {
+		if out, rerr := cfg.Deps.exec(ctx, dir, "git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+defaultBranch+"^{commit}"); rerr == nil {
 			ref = strings.TrimSpace(string(out))
 		}
 	}
 
-	out, err := runner(ctx, dir, "git", "log", "-1", "--format=%H%x00%cI%x00%s", ref)
+	out, err := cfg.Deps.exec(ctx, dir, "git", "log", "-1", "--format=%H%x00%cI%x00%s", ref)
 	if err != nil {
 		// No commits reachable from ref (empty repo): not an error.
 		return "", time.Time{}, "", nil
@@ -177,7 +172,7 @@ func tags(ctx context.Context, cfg config, dir string) ([]archiveTag, error) {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	out, err := runner(ctx, dir, "git", "for-each-ref",
+	out, err := cfg.Deps.exec(ctx, dir, "git", "for-each-ref",
 		"--format=%(refname:short)%00%(objectname)%00%(creatordate:iso-strict)", "refs/tags")
 	if err != nil {
 		return nil, fmt.Errorf("listing tags in %s: %w", dir, err)
@@ -214,7 +209,7 @@ func linkedWorktrees(ctx context.Context, cfg config, dir string) ([]string, err
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	out, err := runner(ctx, dir, "git", "worktree", "list", "--porcelain")
+	out, err := cfg.Deps.exec(ctx, dir, "git", "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("listing worktrees for %s: %w", dir, err)
 	}
@@ -239,7 +234,7 @@ func setRemoteURL(ctx context.Context, cfg config, dir, url string) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	if _, err := runner(ctx, dir, "git", "remote", "set-url", "origin", "--", url); err != nil {
+	if _, err := cfg.Deps.exec(ctx, dir, "git", "remote", "set-url", "origin", "--", url); err != nil {
 		return fmt.Errorf("setting remote url for %s: %w", dir, err)
 	}
 	return nil

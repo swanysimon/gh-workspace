@@ -61,20 +61,17 @@ func TestParseRepoList(t *testing.T) {
 }
 
 func TestListReposArgs(t *testing.T) {
-	old := runner
-	t.Cleanup(func() { runner = old })
-
 	var gotName string
 	var gotArgs []string
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-		gotName = name
-		gotArgs = args
-		return []byte("[]"), nil
-	}
 
 	cfg := defaultConfig()
 	cfg.Org = "myorg"
 	cfg.MaxRepos = 500
+	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gotName = name
+		gotArgs = args
+		return []byte("[]"), nil
+	}
 
 	if _, err := listRepos(context.Background(), cfg); err != nil {
 		t.Fatalf("listRepos: %v", err)
@@ -90,15 +87,11 @@ func TestListReposArgs(t *testing.T) {
 }
 
 func TestListReposError(t *testing.T) {
-	old := runner
-	t.Cleanup(func() { runner = old })
-
-	runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-		return nil, errors.New("gh repo list myorg: exit status 4: HTTP 401: Requires authentication")
-	}
-
 	cfg := defaultConfig()
 	cfg.Org = "myorg"
+	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return nil, errors.New("gh repo list myorg: exit status 4: HTTP 401: Requires authentication")
+	}
 
 	_, err := listRepos(context.Background(), cfg)
 	if err == nil {

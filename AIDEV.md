@@ -238,8 +238,8 @@ Refactor *before* splitting packages, while every test still compiles
 against unexported names. Behavior stays identical, except for the cobra
 step, whose user-visible differences are deliberate and recorded.
 
-- [ ] jj: `jj new -m "refactor: injectable runner and prompt seams"`.
-- [ ] Replace the global `runner` variable with an explicit dependency.
+- [x] jj: `jj new -m "refactor: injectable runner and prompt seams"`.
+- [x] Replace the global `runner` variable with an explicit dependency.
       Define an `Exec` interface (`Run(ctx, dir, name, args...)`) carried in
       a small `deps` struct (exec, confirm prompt, clock, stderr) that every
       entry point takes. `gh_test.go`, `main_test.go` and `archive_test.go`
@@ -247,6 +247,19 @@ step, whose user-visible differences are deliberate and recorded.
       `confirmArchiveWithWorktrees`. Convert them to pass fakes. This is the
       prerequisite for splitting packages: a package-level variable can't be
       shared across `ghcli` and `gitcli`.
+  - **Done, with two deliberate deviations from the wording above** (see
+    `deps.go`): `Exec`/`ConfirmFunc` are function *types*, not a
+    `Run(...)`-method interface — equivalent for this purpose, more
+    idiomatic. `deps` has no `clock` (nothing in the codebase calls a clock
+    seam-worthy source; adding an unused one would be dead code) and no
+    `stderr` (it was never a global — every function already takes it as
+    an explicit `io.Writer` parameter, so it wasn't a problem this step
+    needed to solve). `cfg.Deps.exec`/`cfg.Deps.confirm` cover every
+    production call site; two package-level vars (`execDefault`,
+    `confirmDefault`) remain solely to seed `defaultConfig()`, for
+    black-box tests that build their own `cfg` internally and so have
+    nothing to inject into beforehand. Reviewed and passed by an
+    independent agent; `go build`/`vet`/`gofmt`/`test -race` all clean.
 - [ ] jj: `jj new -m "refactor(cli): move command parsing to cobra"`.
 - [ ] Port the current surface as-is: a root command taking `<org>`, plus
       `worktree add|remove|list`. All flags use `pflag` (cobra's flag
