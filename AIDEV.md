@@ -260,13 +260,13 @@ step, whose user-visible differences are deliberate and recorded.
     black-box tests that build their own `cfg` internally and so have
     nothing to inject into beforehand. Reviewed and passed by an
     independent agent; `go build`/`vet`/`gofmt`/`test -race` all clean.
-- [ ] jj: `jj new -m "refactor(cli): move command parsing to cobra"`.
-- [ ] Port the current surface as-is: a root command taking `<org>`, plus
-      `worktree add|remove|list`. All flags use `pflag` (cobra's flag
-      library). Delete `parseInterspersed`, since `pflag` accepts flags
-      between positional args by default.
-- [ ] Pin the behavior that must *not* change. Write these tests against
-      the current code **before** the port:
+- [x] Pin the behavior that must *not* change. Written against the
+      pre-cobra code, in their own commit (`test: pin CLI exit codes, help
+      text, and flag parsing before the cobra port`), reviewed by an
+      independent agent through two rounds (first found a real env-leak bug
+      and a too-weak assertion, both fixed and re-verified by deliberately
+      reintroducing each regression in a scratch copy and confirming the
+      test catches it):
   - usage errors exit `2`, runtime failures exit `1`, an interrupt exits
     `130`. Cobra returns errors and `main` maps them to exit codes; turn
     off cobra's own usage and error printing.
@@ -275,6 +275,21 @@ step, whose user-visible differences are deliberate and recorded.
   - bool flags accept `--archive=false`
   - `-v`/`--verbose` is the only shorthand flag
   - `-h`/`--help` exits `0`
+  - exact `--help` content (top-level and each `worktree` subcommand), not
+    just "contains the word usage" — the previous `TestHelpExitsZero` and
+    `TestWorktreeHelpUsesGhFlagStyle` were confirmed (by deliberately
+    breaking the help text) not to catch a reordered or reworded flag line
+  - all of the above go through the real entry points (`run`,
+    `runWorktree`, `cmdWorktreeRemove`), not `parseInterspersed`, which is
+    being deleted
+- [ ] jj: `jj new -m "refactor(cli): move command parsing to cobra"`.
+- [ ] Port the current surface as-is: a root command taking `<org>`, plus
+      `worktree add|remove|list`. All flags use `pflag` (cobra's flag
+      library). Delete `parseInterspersed`, since `pflag` accepts flags
+      between positional args by default.
+- [ ] Run the pinned tests above against the ported CLI. Every failure is
+      either a bug to fix or a deliberate difference to record below —
+      decide which for each one before moving on.
 - [ ] Record the deliberate differences here (help text layout, the `help`
       and `completion` subcommands appearing, unknown-flag error wording),
       so the Phase 2 before/after diff has a known expected difference.
