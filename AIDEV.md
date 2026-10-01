@@ -403,9 +403,40 @@ step, whose user-visible differences are deliberate and recorded.
         catches it. `go build`/`vet`/`gofmt`/`test -race` clean on both the
         root
         package and `internal/execx`, zero existing test changes needed.
-  - `internal/ghcli`: `Repo` type, `ListRepos(owner, limit)`,
-    `ViewRepo`, and later `ViewRepos` (GraphQL batch), `CloneURL`. Takes
-    explicit arguments, not a config struct.
+  - [x] `internal/ghcli`: `Repo`/`RefName` types, `ListRepos(ctx, exec,
+        owner, limit)`, `ViewRepo(ctx, exec, nameWithOwner)`, `CloneURL(repo,
+        protocol)` — moved verbatim from `gh.go`, taking an `execx.Exec` and
+        plain arguments instead of a config struct. `ViewRepos` (GraphQL
+        batch) is deferred to Phase 3, when explicit multi-repo tracking
+        actually needs it. Root `gh.go` now holds only type aliases
+        (`ghRepo = ghcli.Repo`, `ghRefName = ghcli.RefName`) and three
+        one-line forwarding shims, so every existing `ghRepo{...}` literal
+        across the codebase (there are dozens, in `main.go`/`worktree.go`/
+        `archive.go`/every test file) keeps compiling unchanged.
+        `gh_test.go` was deleted outright rather than kept as a redundant
+        shim test: its three tests (`TestParseRepoList`, `TestListReposArgs`,
+        `TestListReposError`) moved to `internal/ghcli/ghcli_test.go`
+        verbatim (same assertions), where the real logic now lives, plus
+        three new ones (`TestListReposParseError`, `TestViewRepoArgs`,
+        `TestViewRepoError`, `TestCloneURL`) that `gh_test.go` never had.
+        **Correction after review:** the claim that existing
+        `main_test.go`/`worktree_test.go` tests cover `cfg.Org`/
+        `cfg.MaxRepos` actually reaching the `gh` invocation was false —
+        the independent reviewer demonstrated this by hardcoding both to
+        wrong values in a scratch copy and watching the full suite still
+        pass (those tests' exec fakes return a fixed payload regardless of
+        args, so they only prove `cfg.Deps.exec` is reached, not that it's
+        reached with the right arguments). Fixed with a new
+        `gh_shim_test.go` at the root, specifically testing `gh.go`'s shims
+        (`listRepos`/`getRepo`/`cloneURL`) rather than `internal/ghcli`'s
+        own logic, asserting the real argv. Re-verified by reintroducing
+        the exact regression (hardcoding org/limit) in a scratch copy and
+        confirming the new test now fails.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package,
+        `internal/execx`, and `internal/ghcli`, with zero existing-test
+        changes needed. Re-reviewed after the fix: independently confirmed
+        all three shim tests catch their regressions, and the corrected
+        wording makes no new false claims. Verdict: PASS.
   - `internal/gitcli`: clone/fetch/dirty/update/head/tags/worktree
     helpers. Explicit arguments.
   - `internal/store`: paths (`OwnerDir`, `ReposDir`, `ArchivesDir`),

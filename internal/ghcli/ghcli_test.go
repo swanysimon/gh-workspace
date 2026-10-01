@@ -1,4 +1,4 @@
-package main
+package ghcli
 
 import (
 	"context"
@@ -17,7 +17,7 @@ const canonicalRepoListPayload = `[
 ]`
 
 func TestParseRepoList(t *testing.T) {
-	var repos []ghRepo
+	var repos []Repo
 	if err := json.Unmarshal([]byte(canonicalRepoListPayload), &repos); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestParseRepoList(t *testing.T) {
 		t.Fatalf("got %d repos, want 5", len(repos))
 	}
 
-	byName := map[string]ghRepo{}
+	byName := map[string]Repo{}
 	for _, r := range repos {
 		byName[r.Name] = r
 	}
@@ -63,41 +63,83 @@ func TestParseRepoList(t *testing.T) {
 func TestListReposArgs(t *testing.T) {
 	var gotName string
 	var gotArgs []string
-
-	cfg := defaultConfig()
-	cfg.Org = "myorg"
-	cfg.MaxRepos = 500
-	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		gotName = name
 		gotArgs = args
 		return []byte("[]"), nil
 	}
 
-	if _, err := listRepos(context.Background(), cfg); err != nil {
-		t.Fatalf("listRepos: %v", err)
+	if _, err := ListRepos(context.Background(), fake, "myorg", 500); err != nil {
+		t.Fatalf("ListRepos: %v", err)
 	}
 
 	if gotName != "gh" {
 		t.Fatalf("expected gh, got %q", gotName)
 	}
-	want := []string{"repo", "list", "myorg", "--limit", "500", "--json", ghJSONFields}
+	want := []string{"repo", "list", "myorg", "--limit", "500", "--json", JSONFields}
 	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
 		t.Fatalf("got argv %v, want %v", gotArgs, want)
 	}
 }
 
 func TestListReposError(t *testing.T) {
-	cfg := defaultConfig()
-	cfg.Org = "myorg"
-	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		return nil, errors.New("gh repo list myorg: exit status 4: HTTP 401: Requires authentication")
 	}
 
-	_, err := listRepos(context.Background(), cfg)
+	_, err := ListRepos(context.Background(), fake, "myorg", 10000)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
 	if !strings.Contains(err.Error(), "HTTP 401: Requires authentication") {
 		t.Fatalf("error %q does not contain gh's stderr text", err)
+	}
+}
+
+func TestListReposParseError(t *testing.T) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return []byte("not json"), nil
+	}
+	if _, err := ListRepos(context.Background(), fake, "myorg", 10); err == nil {
+		t.Fatal("expected a parse error")
+	}
+}
+
+func TestViewRepoArgs(t *testing.T) {
+	var gotArgs []string
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gotArgs = args
+		return []byte(`{"id":"R1","name":"repo1","nameWithOwner":"myorg/repo1"}`), nil
+	}
+
+	repo, err := ViewRepo(context.Background(), fake, "myorg/repo1")
+	if err != nil {
+		t.Fatalf("ViewRepo: %v", err)
+	}
+	if repo.ID != "R1" || repo.Name != "repo1" {
+		t.Fatalf("got %+v", repo)
+	}
+	want := []string{"repo", "view", "myorg/repo1", "--json", JSONFields}
+	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
+		t.Fatalf("got argv %v, want %v", gotArgs, want)
+	}
+}
+
+func TestViewRepoError(t *testing.T) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return nil, errors.New("gh repo view myorg/nope: exit status 1: GraphQL: Could not resolve")
+	}
+	if _, err := ViewRepo(context.Background(), fake, "myorg/nope"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestCloneURL(t *testing.T) {
+	repo := Repo{SSHURL: "git@example.invalid:org/repo.git", URL: "https://example.invalid/org/repo"}
+	if got := CloneURL(repo, "ssh"); got != repo.SSHURL {
+		t.Fatalf("ssh protocol: got %q, want %q", got, repo.SSHURL)
+	}
+	if got := CloneURL(repo, "https"); got != repo.URL {
+		t.Fatalf("https protocol: got %q, want %q", got, repo.URL)
 	}
 }
