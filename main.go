@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -679,9 +678,8 @@ func newFlagSet(name string) (*pflag.FlagSet, *bool) {
 	return fs, help
 }
 
-// resolveConfig applies flags > env > file > defaults. fs.Visit reports only
-// flags the caller actually typed, so an unset flag never clobbers a value
-// already set by the env or the config file.
+// resolveConfig applies flags > env > file > defaults, for exactly the
+// settings cmdSync declares in settingsTable.
 //
 // Single-dash long flags (e.g. "-root", accepted by the old stdlib-flag
 // implementation purely as an accident of that package's leniency, contrary
@@ -690,32 +688,9 @@ func newFlagSet(name string) (*pflag.FlagSet, *bool) {
 // as a cluster of shorthand flags, not a long flag. This is a deliberate,
 // intentional difference -- see AIDEV.md.
 func resolveConfig(args []string, stderr io.Writer) (config, error) {
-	var (
-		root         string
-		concurrency  int
-		timeoutStr   string
-		maxRepos     int
-		protocol     string
-		includeForks bool
-		archive      bool
-		force        bool
-		dryRun       bool
-		verbose      bool
-		yes          bool
-		configPath   string
-	)
+	var configPath string
 	fs, help := newFlagSet("gh-org-clone")
-	fs.StringVar(&root, "root", "", "root directory for cloned orgs")
-	fs.IntVar(&concurrency, "concurrency", 0, "number of repos to sync in parallel")
-	fs.StringVar(&timeoutStr, "timeout", "", "per-subprocess timeout")
-	fs.IntVar(&maxRepos, "max-repos", 0, "maximum repos to list from the org (gh --limit)")
-	fs.StringVar(&protocol, "protocol", "", "clone protocol: ssh or https")
-	fs.BoolVar(&includeForks, "include-forks", false, "include forked repos")
-	fs.BoolVar(&archive, "archive", false, "tarball archived repos and remove their clones")
-	fs.BoolVar(&force, "force", false, "ignore stored pushedAt and re-sync every repo")
-	fs.BoolVar(&dryRun, "dry-run", false, "print the planned actions without doing them")
-	fs.BoolVarP(&verbose, "verbose", "v", false, "verbose output")
-	fs.BoolVar(&yes, "yes", false, "don't prompt before removing worktrees to archive a repo they belong to")
+	bound := bindSettings(fs, cmdSync)
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 
 	// A raw parse failure (unknown flag, malformed value) and a bad
@@ -747,71 +722,11 @@ func resolveConfig(args []string, stderr io.Writer) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	if fc != nil {
-		if fc.Root != nil {
-			cfg.Root = *fc.Root
-		}
-		if fc.Concurrency != nil {
-			cfg.Concurrency = *fc.Concurrency
-		}
-		if fc.Timeout != nil {
-			d, err := time.ParseDuration(*fc.Timeout)
-			if err != nil {
-				return config{}, fmt.Errorf("config file: invalid timeout %q: %w", *fc.Timeout, err)
-			}
-			cfg.Timeout = d
-		}
-		if fc.MaxRepos != nil {
-			cfg.MaxRepos = *fc.MaxRepos
-		}
-		if fc.Protocol != nil {
-			cfg.Protocol = *fc.Protocol
-		}
-		if fc.IncludeForks != nil {
-			cfg.IncludeForks = *fc.IncludeForks
-		}
-		if fc.Archive != nil {
-			cfg.Archive = *fc.Archive
-		}
-	}
-
-	if err := overlayEnv(&cfg); err != nil {
+	if err := resolveSettings(&cfg, cmdSync, fs, bound, fc); err != nil {
 		return config{}, err
 	}
 
-	var flagErr error
-	fs.Visit(func(f *pflag.Flag) {
-		switch f.Name {
-		case "root":
-			cfg.Root = root
-		case "concurrency":
-			cfg.Concurrency = concurrency
-		case "timeout":
-			d, err := time.ParseDuration(timeoutStr)
-			if err != nil {
-				flagErr = fmt.Errorf("--timeout: invalid duration %q: %w", timeoutStr, err)
-				return
-			}
-			cfg.Timeout = d
-		case "max-repos":
-			cfg.MaxRepos = maxRepos
-		case "protocol":
-			cfg.Protocol = protocol
-		case "include-forks":
-			cfg.IncludeForks = includeForks
-		case "archive":
-			cfg.Archive = archive
-		}
-	})
-	if flagErr != nil {
-		return config{}, flagErr
-	}
-
 	cfg.Org = positional[0]
-	cfg.Force = force
-	cfg.DryRun = dryRun
-	cfg.Verbose = verbose
-	cfg.Yes = yes
 
 	if err := validateConfig(cfg); err != nil {
 		return config{}, err
@@ -855,75 +770,6 @@ func loadFileConfig(path string) (*fileConfig, error) {
 		return nil, fmt.Errorf("config file %s: %w", path, err)
 	}
 	return &fc, nil
-}
-
-// envSettings maps each GH_ORG_CLONE_* variable to how it applies to a
-// config. overlayEnv applies them in this order.
-var envSettings = []struct {
-	name  string
-	apply func(cfg *config, v string) error
-}{
-	{"GH_ORG_CLONE_ROOT", func(cfg *config, v string) error { cfg.Root = v; return nil }},
-	{"GH_ORG_CLONE_CONCURRENCY", func(cfg *config, v string) error {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("invalid integer %q: %w", v, err)
-		}
-		cfg.Concurrency = n
-		return nil
-	}},
-	{"GH_ORG_CLONE_TIMEOUT", func(cfg *config, v string) error {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("invalid duration %q: %w", v, err)
-		}
-		cfg.Timeout = d
-		return nil
-	}},
-	{"GH_ORG_CLONE_MAX_REPOS", func(cfg *config, v string) error {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("invalid integer %q: %w", v, err)
-		}
-		cfg.MaxRepos = n
-		return nil
-	}},
-	{"GH_ORG_CLONE_PROTOCOL", func(cfg *config, v string) error { cfg.Protocol = v; return nil }},
-	{"GH_ORG_CLONE_INCLUDE_FORKS", func(cfg *config, v string) error {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("invalid bool %q: %w", v, err)
-		}
-		cfg.IncludeForks = b
-		return nil
-	}},
-	{"GH_ORG_CLONE_ARCHIVE", func(cfg *config, v string) error {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("invalid bool %q: %w", v, err)
-		}
-		cfg.Archive = b
-		return nil
-	}},
-}
-
-// overlayEnv applies the named GH_ORG_CLONE_* variables (all of them if
-// none are named). Commands pass only the settings they accept, so a bad
-// value in a variable a command ignores can't make it fail.
-func overlayEnv(cfg *config, only ...string) error {
-	for _, e := range envSettings {
-		if len(only) > 0 && !slices.Contains(only, e.name) {
-			continue
-		}
-		v := os.Getenv(e.name)
-		if v == "" {
-			continue
-		}
-		if err := e.apply(cfg, v); err != nil {
-			return fmt.Errorf("%s: %w", e.name, err)
-		}
-	}
-	return nil
 }
 
 func validateConfig(cfg config) error {

@@ -346,20 +346,58 @@ step, whose user-visible differences are deliberate and recorded.
       and confirmed both newly-recorded deliberate differences are backed
       by real regression tests by re-introducing each one in a scratch copy
       and watching the corresponding pinned test fail. Verdict: PASS.
-- [ ] jj: `jj new -m "refactor: single declarative settings table"`.
-- [ ] Replace `resolveConfig` and `resolveWorktreeConfig` (duplicated
-      precedence logic) with one table. Each entry has: name, flag, env var,
-      config key, parser/validator, and the set of commands that accept it.
-      The table defines settings only. A small binder registers each
-      command's subset as `pflag` flags, so the table doesn't depend on the
-      flag library.
-      One `resolve(command, flags, env, file)` implements
-      flags > env > file > defaults for all commands. Commands still ignore
-      env vars and config keys they don't accept, as today.
-- [ ] Tests: the existing precedence tests pass unchanged, plus a
-      table-driven test asserting each command accepts exactly its declared
-      settings.
-- [ ] `go test -race -count=1 ./...`, `go vet ./...`, `gofmt -l .` clean.
+- [x] jj: `jj new -m "refactor: single declarative settings table"`.
+- [x] Replaced `resolveConfig` and `resolveWorktreeConfig`'s duplicated
+      precedence logic with one table (new `settings.go`). Each entry
+      (`setting`) has: flag name/shorthand/kind, env var, config key
+      (documentation-only, cross-checked against `fileConfig`'s real json
+      tags by a test rather than left to drift — see below), a `fileValue`
+      parser, an `parseEnv` parser, and `commands` (the single source of
+      truth for which commands accept it — `cmdSync` or `cmdWorktree`).
+      `bindSettings(fs, cmd)` registers exactly that command's subset as
+      `pflag` flags; the table itself has no pflag import dependency beyond
+      that one binder, so it doesn't depend on the flag library (its
+      `apply`/`fileValue`/`parseEnv` closures work with plain Go values).
+      `resolveSettings(cfg, cmd, fs, bound, fc)` is the one function
+      implementing flags > env > file > defaults for every command. A
+      command still silently ignores an env var or config key it doesn't
+      declare, exactly as before — now because `settingsFor(cmd)` simply
+      never yields that setting, not because of two independently
+      hand-maintained lists.
+  - `--config`/`--help` stay special-cased outside the table (as before):
+    `--config` names which file to load, so it can't be a value *within*
+    that file, and `--help` was never in the flags table either.
+  - The four sync-only pure-flag settings (`--force`, `--dry-run`,
+    `--verbose`, `--yes`) are table entries too, with `envVar`/`configKey`
+    left `""`. `resolveSettings` applies them through the exact same
+    "only if `fs.Changed`" step as every layered setting — no special
+    case needed, since each one's unchanged value already equals
+    `defaultConfig()`'s.
+- [x] Tests: every existing precedence test
+      (`TestConfigPrecedence`/`TestConfigDefaults`/etc.) passed with zero
+      assertion changes — only call-site plumbing differed. Added, in
+      `settings_test.go`:
+  - `TestSettingsFor`: the table-driven test the plan asked for, asserting
+    each command accepts exactly its declared settings (no more, no
+    fewer).
+  - `TestBindSettingsRegistersExactlyDeclaredFlags`: the same claim, but
+    through `bindSettings` and a real `pflag.FlagSet`, so a bug in its
+    kind-`switch` would show up even if `settingsFor`'s data were right.
+  - `TestSettingsTableConfigKeysMatchFileConfig`: a reflection-based check
+    that every setting's `configKey` names a real `fileConfig` json tag
+    and vice versa, so `configKey` (which nothing else reads — it's
+    documentation-only per its doc comment) can't silently drift from the
+    struct `loadFileConfig` actually decodes, and a new file key can't be
+    added without a matching table entry.
+- [x] `go build ./...`, `go vet ./...`, `gofmt -l .`, and
+      `go test -race -count=1 ./...` all clean. Manually smoke-tested
+      `--help`/`worktree add --help` output (unchanged) and a
+      `--config`+env-var combination end to end. Reviewed by an
+      independent agent, which additionally verified undeclared env/config
+      ignoring empirically (set `GH_ORG_CLONE_ARCHIVE` and confirmed a
+      worktree command ignores it) and confirmed both new table-driven
+      tests catch real injected regressions in a scratch copy. Verdict:
+      PASS.
 
 ## Phase 2 — Extract packages (behavior identical)
 

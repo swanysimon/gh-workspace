@@ -72,16 +72,14 @@ func newWorktreeFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet, *
 
 // resolveWorktreeConfig applies the same root/protocol/timeout/config
 // precedence (flags > env > file > defaults) as the sync command, but only
-// for the flags worktree subcommands need; cfg.Org is left unset for the
-// caller to fill in once it has parsed <org>/<repo> out of the positional
-// args. help is the pointer newWorktreeFlagSet returned; the caller must
-// have added every other flag it wants (e.g. --force) to fs before calling
-// this, since it parses fs itself.
+// for the settings cmdWorktree declares in settingsTable; cfg.Org is left
+// unset for the caller to fill in once it has parsed <org>/<repo> out of
+// the positional args. help is the pointer newWorktreeFlagSet returned; the
+// caller must have added every other flag it wants (e.g. --force) to fs
+// before calling this, since it parses fs itself.
 func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config, []string, error) {
-	var root, protocol, timeoutStr, configPath string
-	fs.StringVar(&root, "root", "", "root directory for cloned orgs")
-	fs.StringVar(&protocol, "protocol", "", "clone protocol: ssh or https")
-	fs.StringVar(&timeoutStr, "timeout", "", "per-subprocess timeout")
+	var configPath string
+	bound := bindSettings(fs, cmdWorktree)
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 
 	if err := fs.Parse(args); err != nil {
@@ -100,44 +98,8 @@ func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config
 	if err != nil {
 		return config{}, nil, err
 	}
-	if fc != nil {
-		if fc.Root != nil {
-			cfg.Root = *fc.Root
-		}
-		if fc.Timeout != nil {
-			d, err := time.ParseDuration(*fc.Timeout)
-			if err != nil {
-				return config{}, nil, fmt.Errorf("config file: invalid timeout %q: %w", *fc.Timeout, err)
-			}
-			cfg.Timeout = d
-		}
-		if fc.Protocol != nil {
-			cfg.Protocol = *fc.Protocol
-		}
-	}
-
-	if err := overlayEnv(&cfg, "GH_ORG_CLONE_ROOT", "GH_ORG_CLONE_PROTOCOL", "GH_ORG_CLONE_TIMEOUT"); err != nil {
+	if err := resolveSettings(&cfg, cmdWorktree, fs, bound, fc); err != nil {
 		return config{}, nil, err
-	}
-
-	var flagErr error
-	fs.Visit(func(f *pflag.Flag) {
-		switch f.Name {
-		case "root":
-			cfg.Root = root
-		case "protocol":
-			cfg.Protocol = protocol
-		case "timeout":
-			d, err := time.ParseDuration(timeoutStr)
-			if err != nil {
-				flagErr = fmt.Errorf("--timeout: invalid duration %q: %w", timeoutStr, err)
-				return
-			}
-			cfg.Timeout = d
-		}
-	})
-	if flagErr != nil {
-		return config{}, nil, flagErr
 	}
 
 	if !filepath.IsAbs(cfg.Root) {
