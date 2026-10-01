@@ -363,7 +363,14 @@ step, whose user-visible differences are deliberate and recorded.
 
 ## Phase 2 — Extract packages (behavior identical)
 
-- [ ] jj: `jj new -m "refactor: extract internal packages"`.
+- [ ] jj: `jj new -m "refactor: extract internal packages"`. **Deviation,
+      recorded as it happens rather than only at the end**: given how large
+      this phase is, it's being done as a sequence of per-package jj
+      changes (dependency order: `execx` → `ghcli`/`gitcli` →
+      `store`/`plan` → `archive` → `settings` → `engine` → `cli` → shrink
+      `main.go`), each reviewed before the next starts, rather than one
+      single commit for the whole phase — matching how Phase 1's steps
+      were handled, and keeping each reviewable on its own.
 - [ ] **Keep `package main` at the repo root.** `gh-extension-precompile`
       builds the root package by default. Moving `main` to `cmd/` would need
       a `build_script_override`. Verify against the action's docs before
@@ -371,8 +378,31 @@ step, whose user-visible differences are deliberate and recorded.
       `internal/cli`.
 - [ ] Layout, under `internal/` per the Phase 0 library-reuse decision
       (dependencies point downward only):
-  - `internal/execx`: `Exec` interface, real implementation (env
-    `GIT_TERMINAL_PROMPT=0` etc.), timeout helper.
+  - [x] `internal/execx`: `Exec` type (a plain func type, not an
+        interface — same deliberate choice as Phase 1's `deps.go`, which
+        this subsumes), `Run` (the real implementation, moved verbatim from
+        `git.go`'s `execCommand`), and a `WithTimeout` helper that replaces
+        the two-line `context.WithTimeout`/`defer cancel()` boilerplate
+        every gitcli call site used to repeat for itself. Root `git.go`'s
+        `execCommand` now just forwards to `execx.Run`—kept as a thin
+        shim (rather than updated at every call site immediately) so this
+        step stays small and reviewable on its own; every call site moves
+        onto `execx` directly when `gitcli`/`ghcli` themselves move.
+        `deps.go`'s `Exec` is now `type Exec = execx.Exec` (a type alias,
+        not a new type), so every existing fake-exec function in every test
+        file keeps compiling with zero changes. New `execx_test.go`
+        (`internal/execx` had no tests of its own before, since
+        `execCommand`'s own behavior — error wrapping, env vars, timeout
+        enforcement — was previously only exercised incidentally by other
+        tests using it to set up fixtures, never asserted on directly).
+        Reviewed by an independent agent (PASS); its one finding (the
+        stderr-trimming assertion didn't actually distinguish trimmed from
+        untrimmed, since the test's own command-args text happened to
+        contain the same word) was fixed and re-verified by reintroducing
+        the regression in a scratch copy and confirming the test now
+        catches it. `go build`/`vet`/`gofmt`/`test -race` clean on both the
+        root
+        package and `internal/execx`, zero existing test changes needed.
   - `internal/ghcli`: `Repo` type, `ListRepos(owner, limit)`,
     `ViewRepo`, and later `ViewRepos` (GraphQL batch), `CloneURL`. Takes
     explicit arguments, not a config struct.
@@ -388,8 +418,9 @@ step, whose user-visible differences are deliberate and recorded.
     clone/worktree/sync-one.
   - `internal/settings`: the Phase 1 table, file config, and path
     resolution.
-  - `internal/cli`: the cobra command tree and help text. The
-    only package that knows command names.
+  - `internal/cli`: command dispatch and help text, still `pflag`-based
+    (not a cobra command tree — that's deferred to Phase 3, see the Phase 1
+    cobra step's note). The only package that knows command names.
 - [ ] **Tests, realistically.** Unexported-name tests move with their
       package, so they stay whitebox inside the package. Command-level tests
       in `main_test.go`/`worktree_test.go` become `internal/cli` tests that

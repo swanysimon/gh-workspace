@@ -1,14 +1,12 @@
 package main
 
-import "context"
+import "github.com/swanysimon/gh-org-clone/internal/execx"
 
-// Exec is the subprocess seam every gh/git call goes through. Production
-// code uses execCommand; tests inject a fake, either via cfg.Deps.exec
-// directly (for tests that build a config and call an internal function) or
-// via execDefault (for black-box tests that exercise run()/runWorktree(),
-// which build their own config internally and so have no cfg to set
-// beforehand).
-type Exec func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+// Exec is a type alias (not a new named type) for execx.Exec, so every
+// existing fake exec function written against the old local Exec type
+// keeps compiling unchanged, while the real implementation lives in
+// internal/execx now (see git.go's execCommand, which forwards to it).
+type Exec = execx.Exec
 
 // ConfirmFunc is the seam archiveRepo uses to ask before removing worktrees,
 // instead of calling defaultConfirmArchiveWithWorktrees (and so os.Stdin)

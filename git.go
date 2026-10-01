@@ -1,33 +1,24 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/swanysimon/gh-org-clone/internal/execx"
 )
 
+// execCommand delegates to internal/execx.Run, which is now the one real
+// implementation of this behavior (GIT_TERMINAL_PROMPT=0 etc. included).
+// This indirection exists only until gitcli/ghcli are themselves extracted
+// into internal/ (see AIDEV.md Phase 2) and start calling execx directly;
+// until then, every git.go/gh.go caller still goes through this name.
 func execCommand(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ADVICE=0")
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
+	return execx.Run(ctx, dir, name, args...)
 }
 
 // runGit runs one git command bounded by cfg.Timeout.
