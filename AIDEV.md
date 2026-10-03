@@ -475,8 +475,51 @@ step, whose user-visible differences are deliberate and recorded.
         changes needed. Re-reviewed after the fix: independently confirmed
         all three shim tests catch their regressions, and the corrected
         wording makes no new false claims. Verdict: PASS.
-  - `internal/gitcli`: clone/fetch/dirty/update/head/tags/worktree
-    helpers. Explicit arguments.
+  - [x] `internal/gitcli`: `Run`/`Clone`/`Fetch`/`IsDirty`/
+        `UpdateWorktree`/`HeadInfo`/`Tags`/`LinkedWorktrees`/`SetRemoteURL`,
+        and a `Tag` type (was `archiveTag`) — moved verbatim from `git.go`,
+        taking an `execx.Exec` and a `time.Duration` timeout instead of
+        `cfg`. `Clone` takes `dest`/`tmp` explicitly rather than computing
+        them: URL and path resolution stay the caller's job (`gh.go`'s
+        `cloneRepo` shim still does that part, using `reposDir(cfg)` and
+        `repo.Name`). Root `git.go` now holds `type archiveTag =
+        gitcli.Tag` plus nine one-line forwarding shims.
+        `git_test.go` kept only the fixtures other test files still share
+        (`initTestRepo`/`testConfig`/`mustMkReposDir`) and lost its six
+        behavioral tests, which moved to `internal/gitcli/gitcli_test.go`
+        against the real git binary (via `execx.Run`, not `cfg`/`ghRepo`),
+        plus two new ones (`TestClone`,
+        `TestCloneFailureCleansUpTmpAndDoesNotRename`) that
+        `cloneRepo`'s indirect exercise of git plumbing never covered on
+        its own.
+        **Applying the `ghcli` step's lesson before review, not after:**
+        added `git_shim_test.go` up front, since `cloneRepo` is the one
+        gitcli shim with real logic of its own (URL selection via
+        `cfg.Protocol`, dest/tmp path computation via `reposDir(cfg)` and
+        `repo.Name`) rather than pure forwarding — the same shape of risk
+        `gh.go`'s `listRepos` had. `TestCloneRepoShimComputesDestAndURL`/
+        `TestCloneRepoShimSelectsHTTPSURL` use a fake `exec` that
+        `os.MkdirAll`s the captured `tmp` path before returning success (so
+        the shim's real, unfaked `os.Rename` into `dest` still succeeds),
+        then assert the captured argv and the final `dest`.
+        `TestGitShimsForwardDirAndTimeout` checks the other eight shims
+        each forward their `dir` argument to `cfg.Deps.exec` unchanged —
+        the dimension most likely to suffer a copy-paste mistake, since
+        every one of them takes `dir` as a plain parameter rather than
+        computing it. Verified all three new tests actually catch their
+        regressions by reintroducing each one (wrong URL field, wrong
+        hardcoded dir) in scratch copies before trusting them.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all three `internal/` packages so far. Reviewed by an independent
+        agent (PASS): confirmed behavioral identity on all nine functions,
+        confirmed the shared test fixtures were kept (not accidentally
+        deleted), and independently reproduced both new regressions the
+        shim tests are meant to catch. One cosmetic, non-blocking finding:
+        `Clone`'s two error messages now interpolate `url` instead of the
+        old `repo.Name` (`gitcli` has no notion of a repo name, only a
+        clone URL) — a deliberate, reasonable consequence of the
+        extraction, and nothing depends on the old wording, but it means
+        "behavior identical" isn't 100% literal for that one error string.
   - `internal/store`: paths (`OwnerDir`, `ReposDir`, `ArchivesDir`),
     state load/save, lock, name validation.
   - `internal/archive`: manifest, tarball, archive procedure, and the
