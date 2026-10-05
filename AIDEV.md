@@ -520,8 +520,39 @@ step, whose user-visible differences are deliberate and recorded.
         clone URL) — a deliberate, reasonable consequence of the
         extraction, and nothing depends on the old wording, but it means
         "behavior identical" isn't 100% literal for that one error string.
-  - `internal/store`: paths (`OwnerDir`, `ReposDir`, `ArchivesDir`),
-    state load/save, lock, name validation.
+  - [x] `internal/store`: `OwnerDir`/`ReposDir`/`ArchivesDir`/`StatePath`/
+        `LockPath` (taking plain `root, owner string` instead of `cfg` —
+        the `Owner` naming from this bullet's own wording is used in the
+        new package now, even though the dedicated org→owner identifier
+        rename elsewhere is still a later checklist item: no cost to
+        naming new code correctly from the start), `State`/`RepoState`/
+        `Status`, `LoadState`/`SaveState`/`AcquireLock`/`ValidRepoName` —
+        moved verbatim from `state.go`. `State.Org`'s field name and json
+        tag are deliberately left alone in this step (out of scope; the
+        rename sweep is its own later step, and this package's job here is
+        extraction, not renaming on-disk data). Root `state.go` is now
+        aliases plus ten thin shims.
+        `state_test.go` was deleted; its three tests moved to
+        `internal/store/store_test.go` verbatim, plus three new ones
+        (`TestOwnerPaths`, `TestAcquireLock`, and a second lock case) for
+        two things that had **no prior direct test at all**: the path
+        functions, and `AcquireLock` itself (previously only exercised
+        indirectly, by tests that pre-create a lock file and check that
+        `run()`/`cmdWorktreeAdd` refuse to proceed).
+        **Added the shim-wiring test up front again** (`state_shim_test.go`,
+        `TestPathShimsForwardRootAndOrg`): `orgDir`/`reposDir`/etc. are the
+        one place in `state.go` with real logic of their own (joining
+        `cfg.Root` and `cfg.Org`); `acquireLock`/`loadState`/`saveState`/
+        `validRepoName` are pure forwards, same reasoning as `gitcli`'s
+        step. Verified both this test and `internal/store`'s new
+        `TestAcquireLock` actually catch their regressions (a hardcoded
+        wrong org, and a lock that silently drops its exclusivity flag) in
+        scratch copies before trusting them.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all five `internal/` packages so far, zero existing test changes.
+        Reviewed by an independent agent (PASS), which independently
+        reproduced both new regression catches and confirmed `State.Org`'s
+        json tag was left untouched.
   - `internal/archive`: manifest, tarball, archive procedure, and the
     worktree confirmation prompt (via the injected prompt).
   - [x] `internal/plan`: `Decide`/`Action` — moved verbatim, but taking
