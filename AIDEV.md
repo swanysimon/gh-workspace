@@ -524,7 +524,37 @@ step, whose user-visible differences are deliberate and recorded.
     state load/save, lock, name validation.
   - `internal/archive`: manifest, tarball, archive procedure, and the
     worktree confirmation prompt (via the injected prompt).
-  - `internal/plan`: pure `decide` and actions.
+  - [x] `internal/plan`: `Decide`/`Action` — moved verbatim, but taking
+        plain `RepoFacts`/`PrevState`/`Options` structs instead of
+        `ghRepo`/`repoState`/`config`, so this package has zero dependency
+        on anything else in the module (matching its "pure" billing more
+        literally than before: previously `decide` still imported the
+        config/repo types even though it never touched the filesystem).
+        `PrevState` has independent `Archived`/`Cloned` bools rather than a
+        shared status enum, so `plan` doesn't need to know what a
+        caller's store calls its status values — root `plan.go`'s shim
+        does that one piece of real mapping logic
+        (`known && prev.Status == statusArchived`, etc.) itself. Root
+        `plan.go` is otherwise a type alias (`action = plan.Action`) plus
+        aliased constants and the one-line-bodied `decide` shim.
+        **No new shim test needed**, unlike `ghcli`/`gitcli`: the existing
+        root `plan_test.go` (kept verbatim, unlike those two) already
+        drives the shim with real `ghRepo`/`repoState`/`config` values
+        across 12 cases, which turns out to already exercise the
+        `Archived`/`Cloned` mapping thoroughly — confirmed by swapping the
+        two in a scratch copy before trusting this claim, which failed 7
+        of those 12. Added `internal/plan/plan_test.go` with the same 12
+        cases translated to the new types, plus one new case (`Known` true
+        with neither `Archived` nor `Cloned` set — shouldn't happen given
+        how the shim builds `PrevState`, but `Decide` has no way to enforce
+        that, so it's worth pinning that it falls through sanely rather
+        than misbehaving).
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all four `internal/` packages so far, zero existing test changes.
+        Reviewed by an independent agent (PASS), which independently
+        reproduced the 7-of-12 failure count and confirmed the new pinned
+        edge case documents a real fallthrough rather than an arbitrary
+        choice.
   - `internal/engine`: task building, worker pool, progress reporting,
     rename handling, and the single-repo path used by
     clone/worktree/sync-one.

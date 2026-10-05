@@ -1,52 +1,38 @@
 package main
 
-type action string
+import "github.com/swanysimon/gh-org-clone/internal/plan"
+
+// action and the actionX constants are aliases for plan.Action/plan's
+// constants, so every existing comparison and switch case elsewhere in the
+// codebase (buildTasks, processTask, archive.go, every test file) keeps
+// compiling and comparing correctly unchanged.
+type action = plan.Action
 
 const (
-	actionSkip          action = "skip"
-	actionClone         action = "clone"
-	actionFetch         action = "fetch"
-	actionArchive       action = "archive"
-	actionAdoptArchived action = "adopt-archived" // archive already on disk, just record it
-	actionUnarchive     action = "unarchive"      // was archived locally, now live upstream
-	actionNotARepo      action = "not-a-repo"     // dir exists, no .git — report, touch nothing
+	actionSkip          = plan.Skip
+	actionClone         = plan.Clone
+	actionFetch         = plan.Fetch
+	actionArchive       = plan.Archive
+	actionAdoptArchived = plan.AdoptArchived
+	actionUnarchive     = plan.Unarchive
+	actionNotARepo      = plan.NotARepo
 )
 
-// decide is pure: no filesystem, no subprocess, no clock. All filesystem
-// facts arrive as parameters so the whole decision matrix is table-testable.
-//
-// archiveExists means both the manifest and the tarball are on disk.
+// decide is a thin shim over plan.Decide, which now holds the real decision
+// logic (plan.go's old content, moved verbatim, taking plain RepoFacts/
+// PrevState/Options instead of ghRepo/repoState/config). The known &&
+// prev.Status == statusX mapping below is the one piece of real logic this
+// shim has of its own.
 func decide(repo ghRepo, prev repoState, known, dirExists, isGitDir, archiveExists bool, cfg config) (action, string) {
-	if dirExists && !isGitDir {
-		return actionNotARepo, "directory exists but is not a git repository"
-	}
-
-	if repo.IsArchived && cfg.Archive {
-		if archiveExists && !dirExists {
-			// Once recorded, an archive is not re-verified on every run;
-			// --force re-checks the tarball against its manifest.
-			if known && !cfg.Force && prev.Status == statusArchived {
-				return actionSkip, "already archived locally"
-			}
-			return actionAdoptArchived, "archive already on disk"
-		}
-		return actionArchive, "repo is archived upstream"
-	}
-
-	if !repo.IsArchived && known && prev.Status == statusArchived {
-		return actionUnarchive, "repo was archived locally but is live upstream again"
-	}
-
-	// AIDEV: pushedAt does not move for every conceivable upstream ref
-	// change, so -force is the escape hatch; upgrade path is a periodic
-	// full ls-remote verification pass.
-	if known && !cfg.Force && prev.PushedAt.Equal(repo.PushedAt) && dirExists && isGitDir && prev.Status == statusCloned {
-		return actionSkip, "pushedAt unchanged since last sync"
-	}
-
-	if !dirExists {
-		return actionClone, "no local clone exists"
-	}
-
-	return actionFetch, "local clone exists and may be stale"
+	return plan.Decide(
+		plan.RepoFacts{Archived: repo.IsArchived, PushedAt: repo.PushedAt},
+		plan.PrevState{
+			Known:    known,
+			Archived: known && prev.Status == statusArchived,
+			Cloned:   known && prev.Status == statusCloned,
+			PushedAt: prev.PushedAt,
+		},
+		dirExists, isGitDir, archiveExists,
+		plan.Options{Force: cfg.Force, Archive: cfg.Archive},
+	)
 }
