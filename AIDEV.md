@@ -553,8 +553,51 @@ step, whose user-visible differences are deliberate and recorded.
         Reviewed by an independent agent (PASS), which independently
         reproduced both new regression catches and confirmed `State.Org`'s
         json tag was left untouched.
-  - `internal/archive`: manifest, tarball, archive procedure, and the
-    worktree confirmation prompt (via the injected prompt).
+  - [x] `internal/archive`: `Manifest`/`Repo`/`WorktreeStatus`/
+        `ConfirmFunc`, `DefaultConfirm`/`isInteractive` (moved from
+        `confirm.go`, not just `archive.go` — the plan's own bullet already
+        said "the worktree confirmation prompt" belongs here),
+        `ManifestPath`/`TarballPath`/`LocalArchiveExists`/`ReadManifest`/
+        `WriteManifest`/`WriteTarball`, `ConfirmAndRemoveWorktrees`, and
+        `Archive` (was `archiveRepo`) — moved verbatim, taking plain
+        arguments and an injected `clone func(ctx) error` callback instead
+        of `cfg`/`ghRepo`, so this package doesn't need to know how to
+        construct a clone URL or temp-dir path itself (that stays `gh.go`/
+        `git.go`'s job). This is the first package with real fan-in:
+        depends on `execx`, `gitcli`, and `store` (for `RepoState`/`Status`,
+        since archiving is one of the outcomes a sync run records) —
+        matches the natural shape of what the function actually
+        orchestrates. `Repo.Owner`/`Manifest.Org`'s field name and json tag
+        are left alone, same scope boundary as `store`'s step.
+        Root `archive.go` and `confirm.go` are now aliases plus eight thin
+        shims; `archiveRepo`'s field-mapping into `archive.Repo` (`cfg.Org`
+        → `Owner`, `repo.*` → the rest) and its `dir`/`clone`/`confirm`
+        closures are the one piece of real logic left at the root.
+        `archive_test.go` was deleted; all eight of its real-git-based
+        tests moved to `internal/archive/archive_test.go` (using
+        `execx.Run`/`gitcli.Clone` instead of `cfg`/`cloneRepo`) with
+        equivalent assertions, plus `confirm_test.go`'s two tests moved to
+        `internal/archive/confirm_test.go`. Root `confirm_test.go` was
+        **kept** (not deleted) since it still tests the shim's one real
+        piece of logic (`cfg.Yes` → `DefaultConfirm`'s parameter).
+        **Added the shim-wiring tests up front again**
+        (`archive_shim_test.go`): `TestArchiveRepoShimMapsFieldsIntoManifest`
+        checks `cfg.Org`/`repo.*` actually reach the written manifest —
+        new coverage, not just moved, since the original `archive_test.go`
+        never asserted on `manifest.Org`/`NameWithOwner`/`URL`/
+        `DefaultBranch`/`PushedAt`/`ArchivedAt` at all. Verified both new
+        shim tests actually catch their regressions (a hardcoded wrong
+        owner, and a hardcoded wrong clone directory) in scratch copies.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all six `internal/` packages so far, with the one necessary,
+        narrowly-scoped test change (`confirm_test.go` no longer calls
+        `isInteractive` directly, since it moved). Reviewed by an
+        independent agent (PASS, the most thorough review in this series
+        given the size of this step): confirmed byte-for-byte logic
+        identity including the "Step N" comments, zero `ghcli` dependency
+        in `internal/archive`, correct closure capture semantics for
+        `clone`, and independently reproduced both new shim-test
+        regression catches.
   - [x] `internal/plan`: `Decide`/`Action` — moved verbatim, but taking
         plain `RepoFacts`/`PrevState`/`Options` structs instead of
         `ghRepo`/`repoState`/`config`, so this package has zero dependency

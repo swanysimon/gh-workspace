@@ -1,5 +1,11 @@
 package main
 
+// This file tests confirm.go's one shim, defaultConfirmArchiveWithWorktrees,
+// directly: the real prompt implementation now lives in and is tested by
+// internal/archive (DefaultConfirm, isInteractive); what's left here is the
+// shim's one piece of real logic, converting cfg.Yes into
+// archive.DefaultConfirm's yes parameter correctly.
+
 import (
 	"os"
 	"testing"
@@ -18,15 +24,14 @@ func TestDefaultConfirmArchiveWithWorktreesYes(t *testing.T) {
 func TestDefaultConfirmArchiveWithWorktreesNonInteractive(t *testing.T) {
 	// /dev/null is a character device but must never be treated as a
 	// terminal a human could answer a prompt on; it's exactly what cron and
-	// CI redirect stdin from.
+	// CI redirect stdin from. (The isInteractive heuristic itself now lives
+	// in, and is tested directly by, internal/archive; this test exercises
+	// the shim end to end instead of calling it directly.)
 	f, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if isInteractive(f) {
-		t.Fatalf("/dev/null must never be treated as interactive")
-	}
 
 	oldStdin := os.Stdin
 	os.Stdin = f
