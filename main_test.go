@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
 func TestConfigVerboseAliases(t *testing.T) {
@@ -320,7 +322,7 @@ func TestRunNoGh(t *testing.T) {
 
 func TestRunLockHeld(t *testing.T) {
 	root := t.TempDir()
-	cfg := config{Root: root, Org: "testorg"}
+	cfg := config{Settings: settings.Settings{Root: root}, Org: "testorg"}
 	if err := os.MkdirAll(orgDir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}

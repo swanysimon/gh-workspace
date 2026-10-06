@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
 // runWorktree dispatches the "gh org-clone worktree <verb>" subcommands. It
@@ -102,14 +103,8 @@ func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config
 		return config{}, nil, err
 	}
 
-	if !filepath.IsAbs(cfg.Root) {
-		return config{}, nil, fmt.Errorf("root must be an absolute path, got %q", cfg.Root)
-	}
-	if cfg.Protocol != "ssh" && cfg.Protocol != "https" {
-		return config{}, nil, fmt.Errorf("protocol must be ssh or https, got %q", cfg.Protocol)
-	}
-	if cfg.Timeout <= 0 {
-		return config{}, nil, fmt.Errorf("timeout must be > 0, got %s", cfg.Timeout)
+	if err := settings.Validate(cfg.Settings); err != nil {
+		return config{}, nil, err
 	}
 
 	return cfg, positional, nil

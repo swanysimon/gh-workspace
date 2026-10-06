@@ -9,10 +9,12 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
 func TestDefaultConfirmArchiveWithWorktreesYes(t *testing.T) {
-	ok, err := defaultConfirmArchiveWithWorktrees(config{Yes: true}, "repo1", []worktreeStatus{{Path: "/tmp/wt"}})
+	ok, err := defaultConfirmArchiveWithWorktrees(config{Settings: settings.Settings{Yes: true}}, "repo1", []worktreeStatus{{Path: "/tmp/wt"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
 const (
@@ -30,30 +30,14 @@ const (
 var orgNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
 
 type config struct {
-	Org          string
-	Root         string // org dir is <Root>/<Org>
-	Concurrency  int
-	Timeout      time.Duration // per subprocess
-	MaxRepos     int           // gh --limit
-	Protocol     string        // "ssh" | "https"
-	IncludeForks bool
-	Archive      bool
-	Force        bool
-	DryRun       bool
-	Verbose      bool
-	Yes          bool // skip the archive-with-live-worktrees confirmation prompt
-	Deps         deps // subprocess + confirm-prompt seams; see deps.go
+	settings.Settings
+	Org  string
+	Deps deps // subprocess + confirm-prompt seams; see deps.go
 }
 
-type fileConfig struct {
-	Root         *string `json:"root"`
-	Concurrency  *int    `json:"concurrency"`
-	Timeout      *string `json:"timeout"` // parsed with time.ParseDuration
-	MaxRepos     *int    `json:"maxRepos"`
-	Protocol     *string `json:"protocol"`
-	IncludeForks *bool   `json:"includeForks"`
-	Archive      *bool   `json:"archive"`
-}
+// fileConfig is an alias for settings.FileConfig, which now holds the real
+// implementation (settings.go's old content, moved verbatim).
+type fileConfig = settings.FileConfig
 
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
@@ -537,27 +521,15 @@ func processTask(ctx context.Context, cfg config, t task, progress *progressRepo
 	return res
 }
 
+// defaultRoot is a thin shim over settings.DefaultRoot.
 func defaultRoot() string {
-	if xdg := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(xdg) {
-		return filepath.Join(xdg, "gh-org-clone")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	return filepath.Join(home, ".local", "share", "gh-org-clone")
+	return settings.DefaultRoot()
 }
 
 func defaultConfig() config {
 	return config{
-		Root:         defaultRoot(),
-		Concurrency:  8,
-		Timeout:      30 * time.Minute,
-		MaxRepos:     10000,
-		Protocol:     "ssh",
-		IncludeForks: false,
-		Archive:      true,
-		Deps:         defaultDeps(),
+		Settings: settings.Default(),
+		Deps:     defaultDeps(),
 	}
 }
 
@@ -734,42 +706,14 @@ func resolveConfig(args []string, stderr io.Writer) (config, error) {
 	return cfg, nil
 }
 
+// resolveConfigPath is a thin shim over settings.ResolveConfigPath.
 func resolveConfigPath(flagValue string) string {
-	if flagValue != "" {
-		return flagValue
-	}
-	if env := os.Getenv("GH_ORG_CLONE_CONFIG"); env != "" {
-		return env
-	}
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
-		return filepath.Join(xdg, "gh-org-clone", "config.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	return filepath.Join(home, ".config", "gh-org-clone", "config.json")
+	return settings.ResolveConfigPath(flagValue)
 }
 
-// loadFileConfig returns nil, nil when the file does not exist. Any other
-// read or parse failure is a hard error — never guess at config intent.
+// loadFileConfig is a thin shim over settings.LoadFileConfig.
 func loadFileConfig(path string) (*fileConfig, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("config file %s: %w", path, err)
-	}
-	defer f.Close()
-
-	var fc fileConfig
-	dec := json.NewDecoder(f)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&fc); err != nil {
-		return nil, fmt.Errorf("config file %s: %w", path, err)
-	}
-	return &fc, nil
+	return settings.LoadFileConfig(path)
 }
 
 func validateConfig(cfg config) error {
@@ -779,20 +723,5 @@ func validateConfig(cfg config) error {
 	if !orgNamePattern.MatchString(cfg.Org) {
 		return fmt.Errorf("org %q is not a valid GitHub org name", cfg.Org)
 	}
-	if cfg.Concurrency < 1 {
-		return fmt.Errorf("concurrency must be >= 1, got %d", cfg.Concurrency)
-	}
-	if cfg.MaxRepos < 1 {
-		return fmt.Errorf("max-repos must be >= 1, got %d", cfg.MaxRepos)
-	}
-	if cfg.Timeout <= 0 {
-		return fmt.Errorf("timeout must be > 0, got %s", cfg.Timeout)
-	}
-	if cfg.Protocol != "ssh" && cfg.Protocol != "https" {
-		return fmt.Errorf("protocol must be ssh or https, got %q", cfg.Protocol)
-	}
-	if !filepath.IsAbs(cfg.Root) {
-		return fmt.Errorf("root must be an absolute path, got %q", cfg.Root)
-	}
-	return nil
+	return settings.Validate(cfg.Settings)
 }

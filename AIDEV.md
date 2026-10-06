@@ -632,8 +632,75 @@ step, whose user-visible differences are deliberate and recorded.
   - `internal/engine`: task building, worker pool, progress reporting,
     rename handling, and the single-repo path used by
     clone/worktree/sync-one.
-  - `internal/settings`: the Phase 1 table, file config, and path
-    resolution.
+  - [x] `internal/settings`: `Settings` (was the flat part of `config`),
+        `Default`/`DefaultRoot`/`Validate`, `FileConfig`/`LoadFileConfig`/
+        `ResolveConfigPath`, and the whole Phase 1 table
+        (`CommandID`/`Setting`/`SettingsFor`/`BindSettings`/
+        `ResolveSettings`) — moved verbatim.
+        **The one real design decision in this step:** `config` keeps its
+        `Deps` field and gains an `Org` field (both root-specific; neither
+        is a "setting" resolvable from a flag/env/file), but it needed
+        every other field (`Root`, `Concurrency`, `Protocol`, etc.) to move
+        into `settings.Settings` — and those fields are read via plain
+        field access (`cfg.Protocol`, `cfg.Timeout`, ...) in dozens of
+        places across every file touched in this whole phase so far.
+        Rather than rewrite every one of those call sites, `config` embeds
+        `settings.Settings` anonymously:
+        ```go
+        type config struct {
+            settings.Settings
+            Org  string
+            Deps deps
+        }
+        ```
+        Go promotes the embedded struct's fields, so `cfg.Protocol` keeps
+        working completely unchanged — confirmed by the fact that this
+        step needed **zero** changes to any of the pervasive
+        `cfg.<SettingField>` call sites in `git.go`/`gh.go`/`archive.go`/
+        `worktree.go`/engine-shaped code in `main.go`. The only casualties
+        were struct **literals** using flat field names, since Go doesn't
+        allow setting a promoted field that way: exactly two existed
+        (`config{Yes: true}` in `confirm_test.go`,
+        `config{Root: root, Org: "testorg"}` in `main_test.go`), both
+        updated to `config{Settings: settings.Settings{...}, ...}`.
+        `validateConfig` now checks `Org` itself, then delegates everything
+        else to `settings.Validate(cfg.Settings)`; `worktree.go`'s three
+        inline root/protocol/timeout checks were replaced by the same
+        `settings.Validate` call — safe because `Concurrency`/`MaxRepos`
+        (the two fields `Validate` also checks but worktree commands don't
+        expose) always sit at their valid defaults for a worktree `cfg`,
+        confirmed by reasoning through `defaultConfig()` rather than
+        assumed. One minor, intentional behavior difference: if *multiple*
+        settings are simultaneously invalid, which error wins differs
+        slightly from before for worktree commands, since `Validate`'s
+        internal check order doesn't match the old inline order exactly;
+        no test depends on this and it only matters when more than one
+        flag is wrong at once.
+        `settings_test.go` was deleted; its three tests (which touch
+        unexported fields like `s.flagName`/`s.configKey` and so can only
+        live inside the package now) moved to
+        `internal/settings/settings_test.go` verbatim, except
+        `TestBindSettingsRegistersExactlyDeclaredFlags` dropped its
+        `--help`-specific assertions (registering `--help` is `gh.go`'s
+        job via `newFlagSet`, not `BindSettings`'). Added
+        `settings_shim_test.go` at the root for exactly what moved out of
+        that test (`newFlagSet`+`bindSettings` together register `--help`
+        plus the right settings) plus two new ones pinning the embedding
+        itself: `resolveSettings`'s shim actually mutates `cfg`'s embedded
+        `Settings` (not some other copy), and `validateConfig` actually
+        checks both `Org` and `settings.Validate`. Verified all three new
+        shim tests catch real regressions (settings applied to a scratch
+        copy instead of `cfg`, and a `validateConfig` that silently skips
+        `settings.Validate`) in scratch copies before trusting them.
+        **Every pinned test from Phase 1** (`TestPin*`, exact `--help`
+        text included) **passed unchanged**, the strongest confirmation
+        available that the embedding is invisible to observable behavior.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all seven `internal/` packages so far. Reviewed by an
+        independent agent (PASS): confirmed the embedding is truly
+        anonymous, confirmed no other `config{...}` literal was missed by
+        grepping the whole repo, and independently reproduced both new
+        shim-test regression catches.
   - `internal/cli`: command dispatch and help text, still `pflag`-based
     (not a cobra command tree — that's deferred to Phase 3, see the Phase 1
     cobra step's note). The only package that knows command names.
