@@ -629,9 +629,104 @@ step, whose user-visible differences are deliberate and recorded.
         reproduced the 7-of-12 failure count and confirmed the new pinned
         edge case documents a real fallthrough rather than an arbitrary
         choice.
-  - `internal/engine`: task building, worker pool, progress reporting,
-    rename handling, and the single-repo path used by
-    clone/worktree/sync-one.
+  - [x] `internal/engine`: `Env` (bundles `Exec`/`Confirm`/`Owner`/
+        `Settings`, plus `ReposDir`/`ArchivesDir`/`StatePath` methods),
+        `Task`/`Result`, `BuildTasks`/`RunTasks` (was `buildTasks`/
+        `runTasks`, with `fixupRename`/`renameApplies`/`processTask`/
+        `progressReporter` moving as unexported internals), and the
+        single-repo path (`CloneInto`, was the real half of `cloneRepo`;
+        `EnsureCloned`, was `ensureClonedForWorktree`) shared by a full
+        sync's clone action, `worktree add`, and (in Phase 3) a standalone
+        `clone` command. This is the biggest fan-in package in the series:
+        depends on `ghcli`, `gitcli`, `store`, `plan`, `archive` and
+        `settings` directly, since it's the orchestration layer that calls
+        all of them.
+        `Task`'s fields are capitalized (`Repo`/`Action`/`Reason`/`Prev`),
+        unlike the old lowercase `task{repo,action,reason,prev}` — the one
+        real, if small, call-site change in this step, since a type alias
+        can't rename a struct's own field names. Two call sites in `run()`
+        (the dry-run print loop, and an "actionable" count used only for
+        the "syncing N repos" message) needed `t.repo`/`t.action`/
+        `t.reason` → `t.Repo`/`t.Action`/`t.Reason`. `result`'s fields were
+        already capitalized before this step, so no `result`/`Result`
+        call site needed to change.
+        `buildEnv(cfg) engine.Env`, a new small root-level helper, adapts
+        `cfg` into the plain `Env` every `engine` function takes — the one
+        piece of real logic `main.go`'s shims have of their own now.
+        **Found and fixed leftover dead code from the Phase 2 steps before
+        this one**, surfaced by this step removing the last production
+        callers: `archive.go`'s `confirmAndRemoveWorktrees` shim had
+        *already* been dead since the `archive` extraction step (nothing
+        ever called it — `archive.Archive` always called
+        `archive.ConfirmAndRemoveWorktrees` internally, not through the
+        root shim; this should have been caught by that step's review and
+        wasn't, since Go gives no unused-function warning the way it does
+        for unused imports/variables). This step's own changes made eleven
+        more functions production-dead the same way, once `engine`'s
+        `processTask`/`fixupRename` started calling `gitcli`/`ghcli`/
+        `archive` directly instead of through `main.go`'s wrappers:
+        `archiveRepo` (duplicated the exact `archive.Repo`-building logic
+        `engine`'s archive branch now has, which is worse than merely dead
+        — two copies that could drift), `cloneURL`, and `isDirty`/
+        `updateWorktree`/`headInfo`/`tags`/`linkedWorktrees`/
+        `setRemoteURL`/`readManifest`/`writeManifest`/`writeTarball`. All
+        removed, along with the type aliases/consts that only existed to
+        support them (`archiveTag`, `archiveManifest`, `manifestVersion`).
+        Found by grepping each shim's call sites after this step's edits,
+        not by assumption — `runGit`/`fetchRepo`/`getRepo`/`listRepos`/
+        `validRepoName`/`tarballPath`/`localArchiveExists` were each
+        individually confirmed to still have a real production caller
+        (mostly in `worktree.go`) before being left alone.
+        **Correction after review:** this list, and the review that
+        checked it, both missed a twelfth: `cloneRepo` itself. Once
+        `worktree.go`/`archive.go`/`main.go`'s `processTask` all call
+        `engine.CloneInto`/`engine.EnsureCloned` directly, `cloneRepo`'s
+        only remaining callers anywhere in the repo are tests
+        (`worktree_test.go`, `main_test.go`, `git_shim_test.go`) using it
+        as a fixture-setup convenience. Rather than rewrite roughly a
+        dozen test call sites to build an `engine.Env` and call
+        `engine.CloneInto` directly for a one-line forward with no
+        remaining logic of its own to protect, `cloneRepo` was kept and
+        its doc comment corrected to say plainly that it is now test-only
+        — recorded here rather than left as a silent inaccuracy a second
+        time.
+        Test coverage for the removed shims didn't disappear: it had
+        already moved to the relevant `internal/` package's own test suite
+        in earlier steps (`gitcli_test.go`, `ghcli_test.go`), or — for the
+        `archiveRepo` field-mapping tests specifically — moved just now
+        into `internal/engine/engine_test.go`
+        (`TestProcessTaskArchiveMapsFieldsIntoManifest`/
+        `TestProcessTaskArchiveComputesDir`, exercising the archive branch
+        through `RunTasks` since `processTask` itself is unexported).
+        `git_shim_test.go`/`gh_shim_test.go` were trimmed to drop
+        coverage of the now-removed shims (`TestGitShimsForwardDirAndTimeout`
+        lost 6 of 8 subtests; `TestCloneURLShimForwardsProtocol` was
+        deleted outright, its ground already covered by
+        `internal/ghcli/ghcli_test.go`'s own `TestCloneURL`).
+        One real test bug caught during this step, by me rather than
+        review: the first draft of `engine_test.go`'s `testEnv` helper
+        forgot to set `Settings.Concurrency`, so `RunTasks`'s worker pool
+        started zero goroutines and silently returned an empty result
+        slice instead of hanging or erroring — worth a comment in the test
+        file so the next person doesn't repeat it, since this failure mode
+        gives no obvious signal pointing at the actual cause.
+        **Every pinned test, plus the real-git `TestRunEndToEnd`, passed
+        unchanged** — the strongest evidence available that moving this
+        much orchestration logic didn't change observable behavior.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all eight `internal/` packages. Reviewed by an independent agent:
+        **FAIL on the first pass**, correctly catching two things this
+        entry's first draft got wrong — the missed `cloneRepo` deadness
+        above, and a stale, orphaned doc-comment fragment (leftover from
+        an edit collision) sitting above `buildEnv` in `main.go` with no
+        connection to it. Both fixed; re-verified clean on build/vet/fmt/
+        test. The review independently re-derived the exact dead-function
+        count (12, not the 11 first claimed) by grepping each name itself
+        rather than trusting the list — worth calling out as the review
+        process working as intended. Also fixed, flagged by the same
+        reviewer as a minor non-blocking aside: `deps.go`'s `ConfirmFunc`
+        doc comment still said "the seam `archiveRepo` uses," naming a
+        function this very step deleted.
   - [x] `internal/settings`: `Settings` (was the flat part of `config`),
         `Default`/`DefaultRoot`/`Validate`, `FileConfig`/`LoadFileConfig`/
         `ResolveConfigPath`, and the whole Phase 1 table

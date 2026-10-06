@@ -8,10 +8,11 @@ import "github.com/swanysimon/gh-org-clone/internal/execx"
 // internal/execx now (see git.go's execCommand, which forwards to it).
 type Exec = execx.Exec
 
-// ConfirmFunc is the seam archiveRepo uses to ask before removing worktrees,
-// instead of calling defaultConfirmArchiveWithWorktrees (and so os.Stdin)
-// directly. Same two injection points as Exec: cfg.Deps.confirm, or
-// confirmDefault for black-box tests.
+// ConfirmFunc is the seam engine's archive handling uses (via buildEnv's
+// Confirm field) to ask before removing worktrees, instead of calling
+// defaultConfirmArchiveWithWorktrees (and so os.Stdin) directly. Same two
+// injection points as Exec: cfg.Deps.confirm, or confirmDefault for
+// black-box tests.
 type ConfirmFunc func(cfg config, repoName string, worktrees []worktreeStatus) (bool, error)
 
 // deps carries every side-effecting dependency a config-threading function

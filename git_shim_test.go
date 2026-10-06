@@ -15,9 +15,10 @@ import (
 // gh_shim_test.go and AIDEV.md's ghcli entry).
 
 // TestCloneRepoShimComputesDestAndURL is the one gitcli shim with real
-// logic of its own (reposDir(cfg)+repo.Name for dest/tmp, cloneURL(repo,
-// cfg) for the URL) rather than pure forwarding; every other shim in
-// git.go just hands cfg.Timeout/cfg.Deps.exec straight through, with no
+// logic of its own (reposDir(cfg)+repo.Name for dest/tmp,
+// ghcli.CloneURL(repo, cfg.Protocol) for the URL) rather than pure
+// forwarding; the other surviving shim in git.go (fetchRepo, besides
+// runGit) just hands cfg.Timeout/cfg.Deps.exec straight through, with no
 // risk of a "right value, wrong field" mix-up the way gh.go's listRepos
 // had between cfg.Org and cfg.MaxRepos.
 func TestCloneRepoShimComputesDestAndURL(t *testing.T) {
@@ -79,12 +80,15 @@ func TestCloneRepoShimSelectsHTTPSURL(t *testing.T) {
 	}
 }
 
-// TestGitShimsForwardDirAndTimeout checks every remaining gitcli shim
-// (runGit, fetchRepo, isDirty, updateWorktree, headInfo, tags,
-// linkedWorktrees, setRemoteURL) actually passes its dir argument through
-// to cfg.Deps.exec, so a copy-paste bug swapping which directory a shim
-// operates on would be caught here rather than only by the real-git
-// integration tests elsewhere in this package.
+// TestGitShimsForwardDirAndTimeout checks the two gitcli shims that
+// survived engine's extraction (runGit, fetchRepo -- isDirty/
+// updateWorktree/headInfo/tags/linkedWorktrees/setRemoteURL became dead
+// code once engine's processTask/fixupRename started calling gitcli
+// directly, and were removed along with this test's coverage of them)
+// actually pass their dir argument through to cfg.Deps.exec, so a
+// copy-paste bug swapping which directory a shim operates on would be
+// caught here rather than only by the real-git integration tests
+// elsewhere in this package.
 func TestGitShimsForwardDirAndTimeout(t *testing.T) {
 	const wantDir = "/shim/test/dir"
 	cfg := defaultConfig()
@@ -104,12 +108,6 @@ func TestGitShimsForwardDirAndTimeout(t *testing.T) {
 	}{
 		{"runGit", func() { runGit(context.Background(), cfg, wantDir, "status") }},
 		{"fetchRepo", func() { fetchRepo(context.Background(), cfg, wantDir) }},
-		{"isDirty", func() { isDirty(context.Background(), cfg, wantDir) }},
-		{"updateWorktree", func() { updateWorktree(context.Background(), cfg, wantDir, "main") }},
-		{"headInfo", func() { headInfo(context.Background(), cfg, wantDir, "") }},
-		{"tags", func() { tags(context.Background(), cfg, wantDir) }},
-		{"linkedWorktrees", func() { linkedWorktrees(context.Background(), cfg, wantDir) }},
-		{"setRemoteURL", func() { setRemoteURL(context.Background(), cfg, wantDir, "https://example.invalid/x") }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -8,15 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/swanysimon/gh-org-clone/internal/engine"
 	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
@@ -125,7 +123,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if cfg.DryRun {
 		for _, t := range tasks {
-			fmt.Fprintf(stdout, "%s: %s (%s)\n", t.repo.Name, t.action, t.reason)
+			fmt.Fprintf(stdout, "%s: %s (%s)\n", t.Repo.Name, t.Action, t.Reason)
 		}
 		if prepassFailed > 0 {
 			return exitRuntimeFail
@@ -135,7 +133,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	actionable := 0
 	for _, t := range tasks {
-		if t.action != actionSkip {
+		if t.Action != actionSkip {
 			actionable++
 		}
 	}
@@ -201,324 +199,43 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return exitSuccess
 }
 
-// sweepTempClones removes leftover .tmp-* directories from a previous
-// interrupted run. These are ours by construction and can never contain
-// user data.
+// buildEnv adapts cfg into the plain engine.Env every engine function
+// takes, so engine has no dependency on this package's config/ghRepo
+// types.
+func buildEnv(cfg config) engine.Env {
+	return engine.Env{
+		Exec: cfg.Deps.exec,
+		Confirm: func(repoName string, worktrees []worktreeStatus) (bool, error) {
+			return cfg.Deps.confirm(cfg, repoName, worktrees)
+		},
+		Owner:    cfg.Org,
+		Settings: cfg.Settings,
+	}
+}
+
+// sweepTempClones is a thin shim over engine.SweepTempClones.
 func sweepTempClones(cfg config) {
-	entries, err := os.ReadDir(reposDir(cfg))
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".tmp-") {
-			os.RemoveAll(filepath.Join(reposDir(cfg), e.Name()))
-		}
-	}
+	engine.SweepTempClones(buildEnv(cfg))
 }
 
-type task struct {
-	repo   ghRepo
-	action action
-	reason string
-	prev   repoState
-}
+// task, result are aliases for engine.Task/engine.Result, so every existing
+// t.Action/res.Name/etc. access elsewhere keeps compiling. task's fields
+// are capitalized (Repo/Action/Reason/Prev) because engine.Task's are --
+// unlike the old lowercase task{repo,action,reason,prev}, this is a visible
+// (if small) call-site change; see AIDEV.md.
+type task = engine.Task
+type result = engine.Result
 
-// buildTasks is the sequential pre-pass: fork filtering, name validation,
-// case-collision detection, ID-based rename fix-up, then decide() per repo.
-// It runs single-threaded, before any worker goroutine starts. failed counts
-// repos the pre-pass refused (invalid or colliding names); they are reported
-// here and must fail the run, since they will never be synced.
+// buildTasks is a thin shim over engine.BuildTasks; see there for the full
+// behavior.
 func buildTasks(ctx context.Context, cfg config, repos []ghRepo, st state, stderr io.Writer) (tasks []task, seen map[string]bool, failed int) {
-	seen = make(map[string]bool, len(repos))
-
-	stateNameByID := map[string]string{}
-	for name, rs := range st.Repos {
-		if rs.ID != "" {
-			stateNameByID[rs.ID] = name
-		}
-	}
-
-	// APFS is case-insensitive: an org holding both Foo and foo maps to one
-	// directory. Skip both sides rather than interleaving two repos into it.
-	// Only repos that would otherwise be synced count: an excluded fork or
-	// an invalid name never gets a directory to collide over.
-	lowerNames := map[string][]string{}
-	for _, r := range repos {
-		if (r.IsFork && !cfg.IncludeForks) || !validRepoName(r.Name) {
-			continue
-		}
-		lower := strings.ToLower(r.Name)
-		lowerNames[lower] = append(lowerNames[lower], r.Name)
-	}
-	collided := map[string]bool{}
-	for lower, names := range lowerNames {
-		if len(names) > 1 {
-			fmt.Fprintf(stderr, "error: repos %v collide on a case-insensitive filesystem (%q); skipping all of them\n", names, lower)
-			for _, n := range names {
-				collided[n] = true
-			}
-			failed += len(names)
-		}
-	}
-
-	for _, repo := range repos {
-		if repo.IsFork && !cfg.IncludeForks {
-			if cfg.Verbose {
-				fmt.Fprintf(stderr, "skipping fork %q\n", repo.Name)
-			}
-			continue
-		}
-		if !validRepoName(repo.Name) {
-			fmt.Fprintf(stderr, "error: %q is not a valid repo name, skipping\n", repo.Name)
-			failed++
-			continue
-		}
-		if collided[repo.Name] {
-			continue
-		}
-		seen[repo.Name] = true
-
-		// In a dry run a pending rename is planned, not performed: the
-		// decision is made against the old directory and state entry, as
-		// if the rename had already happened.
-		renamedFrom := ""
-		if oldName, ok := stateNameByID[repo.ID]; ok && oldName != repo.Name {
-			if cfg.DryRun {
-				if renameApplies(cfg, oldName, repo.Name) {
-					renamedFrom = oldName
-				}
-			} else {
-				fixupRename(ctx, cfg, st, oldName, repo, stderr)
-			}
-		}
-
-		prev, known := st.Repos[repo.Name]
-		dir := filepath.Join(reposDir(cfg), repo.Name)
-		if renamedFrom != "" {
-			seen[renamedFrom] = true
-			prev, known = st.Repos[renamedFrom]
-			dir = filepath.Join(reposDir(cfg), renamedFrom)
-		}
-		_, dirErr := os.Stat(dir)
-		dirExists := dirErr == nil
-		_, gitErr := os.Stat(filepath.Join(dir, ".git"))
-		isGitDir := gitErr == nil
-		archiveExists := localArchiveExists(cfg, repo.Name)
-
-		act, reason := decide(repo, prev, known, dirExists, isGitDir, archiveExists, cfg)
-		if renamedFrom != "" {
-			reason = fmt.Sprintf("rename from %q, then: %s", renamedFrom, reason)
-		}
-		tasks = append(tasks, task{repo: repo, action: act, reason: reason, prev: prev})
-	}
-	return tasks, seen, failed
+	return engine.BuildTasks(ctx, buildEnv(cfg), repos, st, stderr)
 }
 
-// fixupRename moves a renamed repo's directory and state entry without an
-// orphaned directory plus a full re-clone.
-func fixupRename(ctx context.Context, cfg config, st state, oldName string, repo ghRepo, stderr io.Writer) {
-	if !renameApplies(cfg, oldName, repo.Name) {
-		return
-	}
-	oldDir := filepath.Join(reposDir(cfg), oldName)
-	newDir := filepath.Join(reposDir(cfg), repo.Name)
-	if err := os.Rename(oldDir, newDir); err != nil {
-		fmt.Fprintf(stderr, "error: renaming %q to %q: %v\n", oldName, repo.Name, err)
-		return
-	}
-	st.Repos[repo.Name] = st.Repos[oldName]
-	delete(st.Repos, oldName)
-	if url := cloneURL(repo, cfg); url != "" {
-		if err := setRemoteURL(ctx, cfg, newDir, url); err != nil {
-			fmt.Fprintf(stderr, "warning: could not update remote url for renamed repo %q: %v\n", repo.Name, err)
-		}
-	}
-}
-
-// renameApplies reports whether a renamed repo's old directory exists and
-// its new one does not, i.e. whether fixupRename would move anything.
-func renameApplies(cfg config, oldName, newName string) bool {
-	if _, err := os.Stat(filepath.Join(reposDir(cfg), oldName)); err != nil {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(reposDir(cfg), newName))
-	return os.IsNotExist(err)
-}
-
-// result carries a worker's outcome. Errors travel in this struct, never
-// out of a worker, so one repo's failure can never abort another's work.
-type result struct {
-	Name        string
-	Action      action
-	PushedAt    time.Time
-	Status      repoStatus
-	ArchivePath string
-	Notes       []string
-	Err         error
-}
-
-// progressReporter prints one line per non-skip task as a worker picks it
-// up, so a long sync run shows activity instead of going silent until the
-// final summary. It is safe for concurrent use by cfg.Concurrency workers.
-type progressReporter struct {
-	mu      sync.Mutex
-	w       io.Writer
-	total   int
-	started int
-}
-
-func newProgressReporter(w io.Writer, total int) *progressReporter {
-	return &progressReporter{w: w, total: total}
-}
-
-var actionVerbs = map[action]string{
-	actionClone:         "cloning",
-	actionFetch:         "fetching",
-	actionArchive:       "archiving",
-	actionAdoptArchived: "adopting existing archive",
-	actionUnarchive:     "unarchiving (repo live again upstream)",
-	actionNotARepo:      "checking",
-}
-
-func (p *progressReporter) starting(name string, act action) {
-	if p == nil {
-		return
-	}
-	verb, ok := actionVerbs[act]
-	if !ok {
-		verb = string(act)
-	}
-	p.mu.Lock()
-	p.started++
-	fmt.Fprintf(p.w, "[%d/%d] %s: %s\n", p.started, p.total, name, verb)
-	p.mu.Unlock()
-}
-
-// runTasks fans work out to cfg.Concurrency workers and fans results back in
-// through a single collector loop. State is mutated only by that loop, in
-// run() — never here — so there is no mutex and no data race.
+// runTasks is a thin shim over engine.RunTasks; see there for the full
+// behavior.
 func runTasks(ctx context.Context, cfg config, tasks []task, stderr io.Writer) []result {
-	actionable := 0
-	for _, t := range tasks {
-		if t.action != actionSkip {
-			actionable++
-		}
-	}
-	progress := newProgressReporter(stderr, actionable)
-
-	taskCh := make(chan task)
-	resultCh := make(chan result)
-
-	var wg sync.WaitGroup
-	for i := 0; i < cfg.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for t := range taskCh {
-				resultCh <- processTask(ctx, cfg, t, progress)
-			}
-		}()
-	}
-
-	go func() {
-		for _, t := range tasks {
-			taskCh <- t
-		}
-		close(taskCh)
-	}()
-
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
-
-	results := make([]result, 0, len(tasks))
-	for res := range resultCh {
-		results = append(results, res)
-	}
-	return results
-}
-
-func processTask(ctx context.Context, cfg config, t task, progress *progressReporter) result {
-	repo := t.repo
-	res := result{Name: repo.Name, Action: t.action}
-
-	if t.action != actionSkip {
-		progress.starting(repo.Name, t.action)
-	}
-
-	switch t.action {
-	case actionSkip:
-		res.PushedAt = t.prev.PushedAt
-		res.Status = t.prev.Status
-		res.ArchivePath = t.prev.ArchivePath
-		return res
-
-	case actionClone, actionFetch:
-		dir := filepath.Join(reposDir(cfg), repo.Name)
-		if t.action == actionClone {
-			if err := cloneRepo(ctx, cfg, repo); err != nil {
-				res.Err = err
-				return res
-			}
-		} else if err := fetchRepo(ctx, cfg, dir); err != nil {
-			res.Err = err
-			return res
-		}
-
-		defaultBranch := ""
-		if repo.DefaultBranch != nil {
-			defaultBranch = repo.DefaultBranch.Name
-		}
-		warn, dirty, err := updateWorktree(ctx, cfg, dir, defaultBranch)
-		if err != nil {
-			res.Err = err
-			return res
-		}
-		if warn != "" {
-			res.Notes = append(res.Notes, warn)
-		}
-		res.Status = statusCloned
-		// AIDEV: a dirty repo never gets its pushedAt recorded, so the
-		// warning repeats every run instead of silently serving a stale
-		// tree forever; the cost is one wasted fetch per run.
-		if !dirty {
-			res.PushedAt = repo.PushedAt
-		}
-		return res
-
-	case actionArchive, actionAdoptArchived:
-		rs, notes, err := archiveRepo(ctx, cfg, repo)
-		res.Notes = notes
-		if err != nil {
-			res.Err = err
-			return res
-		}
-		res.PushedAt = rs.PushedAt
-		res.Status = rs.Status
-		res.ArchivePath = rs.ArchivePath
-		return res
-
-	case actionUnarchive:
-		if err := cloneRepo(ctx, cfg, repo); err != nil {
-			res.Err = err
-			return res
-		}
-		res.Notes = append(res.Notes, fmt.Sprintf(
-			"repo %q is live upstream again; stale archive at archives/%s.tar.gz and archives/%s.json left in place",
-			repo.Name, repo.Name, repo.Name))
-		res.Status = statusCloned
-		res.PushedAt = repo.PushedAt
-		return res
-
-	case actionNotARepo:
-		dir := filepath.Join(reposDir(cfg), repo.Name)
-		res.Err = fmt.Errorf("%s exists but is not a git repository; left untouched", dir)
-		return res
-	}
-
-	res.Err = fmt.Errorf("unknown action %q for repo %q", t.action, repo.Name)
-	return res
+	return engine.RunTasks(ctx, buildEnv(cfg), tasks, stderr)
 }
 
 // defaultRoot is a thin shim over settings.DefaultRoot.

@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/swanysimon/gh-org-clone/internal/engine"
 	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
@@ -297,21 +297,9 @@ func absWorktreePath(p string) (string, error) {
 // ensureClonedForWorktree clones a repo outside of a normal sync run and
 // writes the same state.json entry a sync run would, so a later sync doesn't
 // find a directory it doesn't remember creating. The caller must hold the
-// org lock.
+// org lock. engine.EnsureCloned is the real implementation now.
 func ensureClonedForWorktree(ctx context.Context, cfg config, repo ghRepo, stderr io.Writer) error {
-	if err := cloneRepo(ctx, cfg, repo); err != nil {
-		return err
-	}
-
-	st := loadState(statePath(cfg), cfg.Org, stderr)
-	st.Repos[repo.Name] = repoState{
-		ID:       repo.ID,
-		PushedAt: repo.PushedAt,
-		SyncedAt: time.Now(),
-		Status:   statusCloned,
-	}
-	st.UpdatedAt = time.Now()
-	return saveState(statePath(cfg), st)
+	return engine.EnsureCloned(ctx, buildEnv(cfg), repo, stderr)
 }
 
 func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Writer) int {

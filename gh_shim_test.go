@@ -55,20 +55,3 @@ func TestGetRepoShimForwardsNameWithOwner(t *testing.T) {
 		t.Fatalf("nameWithOwner did not reach the gh invocation: %v", gotArgs)
 	}
 }
-
-// TestCloneURLShimForwardsProtocol exercises gh.go's cloneURL shim,
-// confirming cfg.Protocol actually selects between SSHURL and URL.
-func TestCloneURLShimForwardsProtocol(t *testing.T) {
-	repo := ghRepo{SSHURL: "git@example.invalid:org/repo.git", URL: "https://example.invalid/org/repo"}
-
-	cfg := defaultConfig()
-	cfg.Protocol = "ssh"
-	if got := cloneURL(repo, cfg); got != repo.SSHURL {
-		t.Fatalf("ssh: got %q, want %q", got, repo.SSHURL)
-	}
-
-	cfg.Protocol = "https"
-	if got := cloneURL(repo, cfg); got != repo.URL {
-		t.Fatalf("https: got %q, want %q", got, repo.URL)
-	}
-}
