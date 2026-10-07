@@ -140,6 +140,12 @@ type CommandID string
 const (
 	CmdSync     CommandID = "sync"
 	CmdWorktree CommandID = "worktree"
+	// CmdClone is the single-repo `clone <owner>/<repo>` command: it needs
+	// --archive/--force (its decision matrix is the same plan.Decide a full
+	// sync uses) in addition to the root/timeout/protocol CmdWorktree
+	// already needs, but not --concurrency/--max-repos/--include-forks,
+	// which only make sense for a whole owner's listing.
+	CmdClone CommandID = "clone"
 )
 
 // settingKind selects how a setting's flag is registered on a pflag.FlagSet
@@ -231,7 +237,7 @@ func parseEnvBool(v string) (any, error) {
 var settingsTable = []Setting{
 	{
 		flagName: "root", kind: kindString, usage: "root directory for cloned orgs",
-		envVar: "GH_ORG_CLONE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree),
+		envVar: "GH_ORG_CLONE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Root == nil {
 				return nil, false, nil
@@ -255,7 +261,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "timeout", kind: kindDuration, usage: "per-subprocess timeout",
-		envVar: "GH_ORG_CLONE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree),
+		envVar: "GH_ORG_CLONE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Timeout == nil {
 				return nil, false, nil
@@ -289,7 +295,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "protocol", kind: kindString, usage: "clone protocol: ssh or https",
-		envVar: "GH_ORG_CLONE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree),
+		envVar: "GH_ORG_CLONE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Protocol == nil {
 				return nil, false, nil
@@ -313,7 +319,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "archive", kind: kindBool, usage: "tarball archived repos and remove their clones",
-		envVar: "GH_ORG_CLONE_ARCHIVE", configKey: "archive", commands: inCmd(CmdSync),
+		envVar: "GH_ORG_CLONE_ARCHIVE", configKey: "archive", commands: inCmd(CmdSync, CmdClone),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Archive == nil {
 				return nil, false, nil
@@ -325,7 +331,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "force", kind: kindBool, usage: "ignore stored pushedAt and re-sync every repo",
-		commands: inCmd(CmdSync),
+		commands: inCmd(CmdSync, CmdClone),
 		apply:    func(s *Settings, v any) { s.Force = v.(bool) },
 	},
 	{

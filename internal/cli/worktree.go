@@ -54,10 +54,11 @@ func printWorktreeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  gh org-clone worktree list [flags] <org>/<repo>|<org>")
 }
 
-// newWorktreeFlagSet makes a subcommand's flag set whose -h/--help output
-// is the subcommand's own usage line followed by its flags, plus the
-// "help" flag every FlagSet carries (see main.go's newFlagSet).
-func newWorktreeFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet, *bool) {
+// newSubcommandFlagSet makes a subcommand's flag set whose -h/--help
+// output is the subcommand's own usage line followed by its flags, plus
+// the "help" flag every FlagSet carries (see main.go's newFlagSet). Used
+// by every worktree subcommand, plus clone and untrack.
+func newSubcommandFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet, *bool) {
 	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	help := fs.BoolP("help", "h", false, "show help")
@@ -71,16 +72,16 @@ func newWorktreeFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet, *
 	return fs, help
 }
 
-// resolveWorktreeConfig applies the same root/protocol/timeout/config
+// resolveSubcommandConfig applies the same root/protocol/timeout/config
 // precedence (flags > env > file > defaults) as the sync command, but only
-// for the settings cmdWorktree declares in settingsTable; cfg.Owner is left
-// unset for the caller to fill in once it has parsed <org>/<repo> out of
-// the positional args. help is the pointer newWorktreeFlagSet returned; the
+// for the settings cmd declares in settingsTable; cfg.Owner is left unset
+// for the caller to fill in once it has parsed <org>/<repo> out of the
+// positional args. help is the pointer newSubcommandFlagSet returned; the
 // caller must have added every other flag it wants (e.g. --force) to fs
 // before calling this, since it parses fs itself.
-func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config, []string, error) {
+func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args []string) (config, []string, error) {
 	var configPath string
-	bound := bindSettings(fs, cmdWorktree)
+	bound := bindSettings(fs, cmd)
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 
 	if err := fs.Parse(args); err != nil {
@@ -99,7 +100,7 @@ func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config
 	if err != nil {
 		return config{}, nil, err
 	}
-	if err := resolveSettings(&cfg, cmdWorktree, fs, bound, fc); err != nil {
+	if err := resolveSettings(&cfg, cmd, fs, bound, fc); err != nil {
 		return config{}, nil, err
 	}
 
@@ -131,8 +132,8 @@ func parseOwnerRepo(s string) (owner, repo string, err error) {
 
 func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "gh org-clone worktree add [flags] <org>/<repo> <branch> <path>"
-	fs, help := newWorktreeFlagSet("gh org-clone worktree add", usage, stderr)
-	cfg, rest, err := resolveWorktreeConfig(fs, help, args)
+	fs, help := newSubcommandFlagSet("gh org-clone worktree add", usage, stderr)
+	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -305,10 +306,10 @@ func ensureClonedForWorktree(ctx context.Context, cfg config, repo ghRepo, stder
 
 func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>"
-	fs, help := newWorktreeFlagSet("gh org-clone worktree remove", usage, stderr)
+	fs, help := newSubcommandFlagSet("gh org-clone worktree remove", usage, stderr)
 	var force bool
 	fs.BoolVar(&force, "force", false, "remove even if the worktree has uncommitted changes")
-	cfg, rest, err := resolveWorktreeConfig(fs, help, args)
+	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -358,8 +359,8 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 
 func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "gh org-clone worktree list [flags] <org>/<repo>|<org>"
-	fs, help := newWorktreeFlagSet("gh org-clone worktree list", usage, stderr)
-	cfg, rest, err := resolveWorktreeConfig(fs, help, args)
+	fs, help := newSubcommandFlagSet("gh org-clone worktree list", usage, stderr)
+	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}

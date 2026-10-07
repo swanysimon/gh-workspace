@@ -70,11 +70,13 @@ func TestSettingsTableConfigKeysMatchFileConfig(t *testing.T) {
 // on: which commands accept which settings, matching the sync/worktree
 // surface documented in AIDEV.md and the README.
 func TestSettingsFor(t *testing.T) {
-	syncOnly := []string{"concurrency", "max-repos", "include-forks", "archive", "force", "dry-run", "verbose", "yes"}
+	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes"}
+	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
 
 	syncNames := flagNames(SettingsFor(CmdSync))
 	worktreeNames := flagNames(SettingsFor(CmdWorktree))
+	cloneNames := flagNames(SettingsFor(CmdClone))
 
 	for _, name := range shared {
 		if !syncNames[name] {
@@ -82,6 +84,20 @@ func TestSettingsFor(t *testing.T) {
 		}
 		if !worktreeNames[name] {
 			t.Errorf("CmdWorktree is missing shared setting %q", name)
+		}
+		if !cloneNames[name] {
+			t.Errorf("CmdClone is missing shared setting %q", name)
+		}
+	}
+	for _, name := range syncAndClone {
+		if !syncNames[name] {
+			t.Errorf("CmdSync is missing setting %q", name)
+		}
+		if !cloneNames[name] {
+			t.Errorf("CmdClone is missing setting %q", name)
+		}
+		if worktreeNames[name] {
+			t.Errorf("CmdWorktree unexpectedly accepts setting %q", name)
 		}
 	}
 	for _, name := range syncOnly {
@@ -91,12 +107,18 @@ func TestSettingsFor(t *testing.T) {
 		if worktreeNames[name] {
 			t.Errorf("CmdWorktree unexpectedly accepts sync-only setting %q", name)
 		}
+		if cloneNames[name] {
+			t.Errorf("CmdClone unexpectedly accepts sync-only setting %q", name)
+		}
 	}
-	if got, want := len(syncNames), len(syncOnly)+len(shared); got != want {
+	if got, want := len(syncNames), len(syncOnly)+len(syncAndClone)+len(shared); got != want {
 		t.Errorf("CmdSync has %d settings, want %d (unexpected extra entries)", got, want)
 	}
 	if got, want := len(worktreeNames), len(shared); got != want {
 		t.Errorf("CmdWorktree has %d settings, want %d (unexpected extra entries)", got, want)
+	}
+	if got, want := len(cloneNames), len(syncAndClone)+len(shared); got != want {
+		t.Errorf("CmdClone has %d settings, want %d (unexpected extra entries)", got, want)
 	}
 }
 
@@ -116,7 +138,7 @@ func flagNames(settings []Setting) map[string]bool {
 // caller's job (gh.go's newFlagSet), not BindSettings'; see
 // settings_shim_test.go at the repo root for that integration-level check.
 func TestBindSettingsRegistersExactlyDeclaredFlags(t *testing.T) {
-	for _, cmd := range []CommandID{CmdSync, CmdWorktree} {
+	for _, cmd := range []CommandID{CmdSync, CmdWorktree, CmdClone} {
 		fs := pflag.NewFlagSet(string(cmd), pflag.ContinueOnError)
 		BindSettings(fs, cmd)
 

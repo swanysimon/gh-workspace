@@ -48,6 +48,8 @@ func TestPinTopLevelHelp(t *testing.T) {
 	want := "Clone and keep local mirrors of every repository in a GitHub org.\n\n" +
 		"USAGE\n" +
 		"  gh org-clone [flags] <org>\n" +
+		"  gh org-clone clone [flags] <org>/<repo>...\n" +
+		"  gh org-clone untrack [flags] <org>/<repo>\n" +
 		"  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>\n" +
 		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>\n" +
 		"  gh org-clone worktree list [flags] <org>/<repo>|<org>\n\n" +

@@ -307,6 +307,73 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunPreservesTrackedAcrossSync guards a real bug this phase's own
+// work introduced and fixed before it ever shipped: Run()'s sync loop
+// writes a brand new repoState literal for every repo on every run, and
+// that literal did not carry the previous entry's Tracked bit forward --
+// so a repo explicitly added via worktree add (or, later, a clone
+// command) would have silently reverted to untracked the very next time
+// an ordinary owner-wide sync touched it.
+func TestRunPreservesTrackedAcrossSync(t *testing.T) {
+	ctx := context.Background()
+	origin := initTestRepo(t)
+	pushedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	repos := []ghRepo{
+		{ID: "R1", Name: "repo1", NameWithOwner: "testorg/repo1", URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"}, PushedAt: pushedAt},
+	}
+	reposJSON, err := json.Marshal(repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		if name == "gh" {
+			return reposJSON, nil
+		}
+		return old(ctx, dir, name, args...)
+	}
+
+	root := t.TempDir()
+
+	// Simulate a repo already explicitly tracked (as if by a prior
+	// worktree add) before this sync run even starts: pre-seed state.json
+	// with Tracked: true and a pushedAt already matching upstream, so the
+	// sync plans a Skip for it -- the least favorable case for "carries
+	// forward," since a Skip's state write path is the shortest one.
+	cfg := defaultConfig()
+	cfg.Root = root
+	cfg.Owner = "testorg"
+	if err := os.MkdirAll(ownerDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preseeded := state{
+		Version: stateVersion,
+		Org:     "testorg",
+		Repos: map[string]repoState{
+			"repo1": {ID: "R1", PushedAt: pushedAt, SyncedAt: pushedAt, Status: statusCloned, Tracked: true},
+		},
+	}
+	if err := saveState(statePath(cfg), preseeded); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloneRepo(ctx, cfg, repos[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
+	}
+
+	got := loadState(statePath(cfg), "testorg", &stderr)
+	if !got.Repos["repo1"].Tracked {
+		t.Fatalf("Tracked was not carried forward across the sync run: %+v", got.Repos["repo1"])
+	}
+}
+
 func TestRunNoGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 

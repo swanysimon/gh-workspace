@@ -75,7 +75,13 @@ func CloneInto(ctx context.Context, env Env, repo ghcli.Repo) error {
 
 // EnsureCloned clones repo if needed and writes the same state.json entry a
 // sync run would, so a later sync doesn't find a directory it doesn't
-// remember creating. The caller must hold the owner's lock.
+// remember creating. It is worktree add's single-repo clone path
+// specifically: always clones unconditionally (worktree add needs a live
+// checkout and makes its own archived-repo decision afterward), unlike
+// SyncOne below, which is the clone command's path and makes the same
+// skip/fetch/archive decision a full sync would. The resulting RepoState
+// is marked Tracked: true -- this is, by definition, an explicit add. The
+// caller must hold the owner's lock.
 func EnsureCloned(ctx context.Context, env Env, repo ghcli.Repo, stderr io.Writer) error {
 	if err := CloneInto(ctx, env, repo); err != nil {
 		return err
@@ -87,9 +93,74 @@ func EnsureCloned(ctx context.Context, env Env, repo ghcli.Repo, stderr io.Write
 		PushedAt: repo.PushedAt,
 		SyncedAt: time.Now(),
 		Status:   store.StatusCloned,
+		Tracked:  true,
 	}
 	st.UpdatedAt = time.Now()
 	return store.SaveState(env.StatePath(), st)
+}
+
+// SyncOne resolves one repo's action via the same decision plan.Decide
+// would make inside a full owner sync (skip if unchanged, fetch if
+// changed, archive if archived upstream and env.Settings.Archive is set,
+// adopt an existing local archive, or clone if nothing exists locally yet),
+// runs it, and records the result in state.json -- the single-repo
+// counterpart to BuildTasks+RunTasks, for callers (the clone command) that
+// resolved one repo via gh instead of a full owner listing. Unlike
+// EnsureCloned, this can tarball-and-delete an archived-upstream repo
+// instead of always cloning it, matching what a full sync would have done
+// to the same repo -- which is why worktree add does not use this: it
+// always wants a live checkout, and makes its own decision about an
+// archived repo afterward (see cmdWorktreeAdd).
+//
+// explicit marks the resulting RepoState.Tracked, ORed with whatever the
+// repo's Tracked bit already was (tracking is sticky: once true, only
+// Untrack clears it). Every caller of SyncOne today passes explicit=true,
+// since every current caller is an explicit add; the parameter exists
+// rather than a hardcoded true so a later single-owner refresh path could
+// reuse this with explicit=false. On failure, no state is written -- the
+// repo keeps whatever was there before, so it's retried next time,
+// matching how a full sync's per-repo failure handling works. The caller
+// must hold the owner's lock.
+func SyncOne(ctx context.Context, env Env, repo ghcli.Repo, explicit bool, stderr io.Writer) (Result, error) {
+	st := store.LoadState(env.StatePath(), env.Owner, stderr)
+	prev, known := st.Repos[repo.Name]
+
+	dir := filepath.Join(env.ReposDir(), repo.Name)
+	_, dirErr := os.Stat(dir)
+	dirExists := dirErr == nil
+	_, gitErr := os.Stat(filepath.Join(dir, ".git"))
+	isGitDir := gitErr == nil
+	archiveExists := archive.LocalArchiveExists(env.ArchivesDir(), repo.Name)
+
+	act, reason := plan.Decide(
+		plan.RepoFacts{Archived: repo.IsArchived, PushedAt: repo.PushedAt},
+		decidePrevState(prev, known),
+		dirExists, isGitDir, archiveExists,
+		plan.Options{Force: env.Settings.Force, Archive: env.Settings.Archive},
+	)
+
+	res := processTask(ctx, env, Task{Repo: repo, Action: act, Reason: reason, Prev: prev}, nil)
+	if res.Err != nil {
+		return res, res.Err
+	}
+
+	id := repo.ID
+	if id == "" {
+		id = prev.ID
+	}
+	st.Repos[repo.Name] = store.RepoState{
+		ID:          id,
+		PushedAt:    res.PushedAt,
+		SyncedAt:    time.Now(),
+		Status:      res.Status,
+		ArchivePath: res.ArchivePath,
+		Tracked:     explicit || prev.Tracked,
+	}
+	st.UpdatedAt = time.Now()
+	if err := store.SaveState(env.StatePath(), st); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 // Task is one repo's planned action, decided by BuildTasks.
@@ -102,8 +173,8 @@ type Task struct {
 
 // decidePrevState maps a store.RepoState's Status into plan.PrevState's two
 // independent bools -- the same mapping gh-org-clone's old root-level
-// decide() shim did, now engine's to own since BuildTasks is the only
-// caller of plan.Decide for a full sync's tasks.
+// decide() shim did, now shared by BuildTasks (a full owner sync) and
+// SyncOne (a single resolved repo).
 func decidePrevState(prev store.RepoState, known bool) plan.PrevState {
 	return plan.PrevState{
 		Known:    known,

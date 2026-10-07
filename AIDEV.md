@@ -924,28 +924,167 @@ step, whose user-visible differences are deliberate and recorded.
 
 Each bullet group is its own jj change.
 
-- [ ] jj: `jj new -m "feat(state): v2 state with explicit tracking and migration"`.
-  - [ ] `repoState.Tracked`, v1 → v2 migration in `store`, backup of a
-        corrupt file, and tests for migrate / unknown-version /
-        corrupt-backup.
-  - [ ] Implement the tracking rule (tracked = config lists it OR state
-        marks it explicit) as one function, with a table test covering
-        each combination of config-listed, owner-listed and
-        state-explicit, plus a repo removed from the config.
-- [ ] jj: `jj new -m "feat: clone and untrack commands"`.
-  - [ ] Promote `ensureClonedForWorktree` into
-        `engine.SyncOne(owner, repo, explicit=true)`. `clone` and
-        `worktree add` both call it.
-  - [ ] Semantics:
-    - already present, `pushedAt` unchanged → skip (zero git calls)
-    - already present, `pushedAt` changed → fetch + fast-forward, like
-      sync
-    - archived upstream → same archive rules as sync (respect `archive`)
-    - already archived locally → report the tarball and don't re-clone
-      (matching `worktree add` today)
-  - [ ] `untrack` flips state only. It prints where local data remains and
-        never deletes. It fails with an error naming the config entry if
-        the config tracks the repo.
+- [x] jj: `jj new -m "feat(state): v2 state with explicit tracking and migration"`.
+  - [x] `RepoState.Tracked` (bool), `store.Version` bumped 1 → 2, v1 → v2
+        migration in `LoadState` (every v1 entry becomes `Tracked: true`,
+        with the reasoning for "true, not false" written directly into
+        `LoadState`'s doc comment: v1 can't distinguish an owner-swept
+        entry from a `worktree add`-sourced one, and under-tracking risks
+        `sync --tracked-only` silently going quiet on a repo someone is
+        using, which is worse than some redundant syncing), and a corrupt
+        file now gets backed up to `<path>.corrupt-<unix-timestamp>`
+        (content preserved, path named in the warning) instead of just
+        being discarded. Three new tests:
+        `TestLoadStateMigratesV1ToV2` (migrates, preserves other fields,
+        round-trips through a save/reload as v2 with no further
+        migration), `TestLoadStateCorruptBacksUpFile` (backup exists,
+        exact content, path named in the warning), and the existing
+        `TestLoadStateCorrupt`'s "wrong version"/"nil repos" cases
+        rechecked against the new logic (the latter's `version: 1` fixture
+        now exercises the migration path too, harmlessly — confirmed by
+        running it, not assumed).
+  - [x] `store.IsTracked(ownerConfigured, repoConfigured, explicit bool)
+        bool` implements the tracking rule as a plain three-way `OR`,
+        taking bare bools rather than a concrete owners/repos config
+        shape, since that config doesn't exist until the next Phase 3
+        step — its caller will compute the first two args once it does.
+        `TestIsTracked` covers all 8 combinations despite the function's
+        triviality, since this one `OR` is the hinge every "never delete,
+        never silently stop syncing" guarantee in the whole tool depends
+        on; it's worth a named test that fails loudly if someone
+        "simplifies" it into an `AND` or drops an argument later.
+  - [x] **Found and fixed a real bug while wiring this up, not just adding
+        the field**: `internal/cli/main.go`'s regular sync loop writes a
+        brand new `repoState` literal for every repo on every run, and
+        that literal didn't carry the previous entry's `Tracked` bit
+        forward. Left as-is, a repo explicitly added via `worktree add`
+        would have silently reverted to untracked the very next ordinary
+        sync — exactly the kind of regression this field exists to
+        prevent, introduced by the same step that added the field.
+        Fixed by reading `st.Repos[res.Name].Tracked` forward into the new
+        literal; `TestRunPreservesTrackedAcrossSync` pins it (pre-seeds a
+        `Tracked: true` entry, runs a real sync, confirms it survives),
+        verified against a reintroduced regression in a scratch copy
+        before trusting it. Also wired `engine.EnsureCloned` (the
+        clone-and-record-state path `worktree add` already uses, and a
+        future `clone` command will too) to set `Tracked: true` on write
+        — by construction, anything going through that path is an
+        explicit add; `TestEnsureClonedMarksTracked` in
+        `internal/engine` pins it, same verify-the-regression-first
+        discipline.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all eight `internal/` packages. Reviewed by an independent agent
+        (PASS): independently reproduced both regressions in scratch
+        copies, confirmed the "unknown version" path genuinely never
+        writes a backup (by experiment, not just reading the code), and
+        grepped every `RepoState`/`repoState` literal in the codebase for
+        a missed carry-forward site (`archive.go`'s two constructions
+        checked and confirmed harmless, since `engine.Result` has no
+        `Tracked` field for that data to even flow through).
+- [x] jj: `jj new -m "feat: clone and untrack commands"`.
+  - [x] Added `engine.SyncOne(ctx, env, repo, explicit, stderr) (Result,
+        error)`, **not** a promotion of `ensureClonedForWorktree`/
+        `EnsureCloned` as literally written — real design finding, recorded
+        rather than silently resolved: `worktree add`'s existing behavior
+        on an archived-upstream repo (always clone it, then refuse to add
+        a worktree, leaving an ordinary clone behind) and the plan's
+        stated semantics for `clone` ("archived upstream → same archive
+        rules as sync", i.e. tarball-and-delete when `--archive` is set)
+        are genuinely different, deliberate behaviors for the same
+        upstream state — `worktree add`'s whole purpose is a live checkout,
+        so archiving on its behalf would be counterproductive. Retrofitting
+        `worktree add` onto `SyncOne` would have silently changed that
+        established, tested behavior. Resolution: `SyncOne` reuses the
+        exact decision pipeline (`plan.Decide`) and single-task execution
+        (`processTask`, called with a `nil` progress reporter, which it
+        already handles) that `BuildTasks`/`RunTasks` use for a full sync,
+        so a repo resolved one at a time gets the identical skip/fetch/
+        archive/adopt decision a full sync would have made for it.
+        `EnsureCloned` (unconditional clone, used by `worktree add` only)
+        and `SyncOne` (decide-based, used by `clone` only) now coexist as
+        two distinct single-repo paths with different, documented
+        purposes, cross-referencing each other's doc comments to explain
+        why the other exists. `worktree add` itself is **unchanged**.
+        Six new tests in `internal/engine/engine_test.go` cover exactly
+        the plan's four semantics plus two more:
+        `TestSyncOneClonesWhenNothingLocal`,
+        `TestSyncOneSkipsWhenUnchanged` (asserts zero git calls),
+        `TestSyncOneFetchesWhenChanged`,
+        `TestSyncOneArchivesWhenArchivedUpstream`,
+        `TestSyncOneAdoptsExistingArchive` (zero git calls),
+        `TestSyncOneDoesNotWriteStateOnFailure` (matches a full sync's
+        per-repo failure handling: a failed repo's state entry is left
+        alone, not overwritten with a result from a run that didn't
+        happen, so it's retried next time).
+  - [x] `clone <org>/<repo>...` (new `internal/cli/clone.go`): resolves
+        each argument via `gh repo view`, calls `SyncOne` with
+        `explicit=true` under the owner's lock, and continues past a
+        failed argument to try the rest — the same per-repo
+        continue-past-failure philosophy a full sync already uses —
+        exiting `1` if any argument failed. Accepts `--root`/`--protocol`/
+        `--timeout`/`--config` (shared with `worktree`) plus `--archive`/
+        `--force` (shared with `sync`, new to this command specifically):
+        `internal/settings` gained a `CmdClone` `CommandID` with exactly
+        that membership, and `TestSettingsFor`/
+        `TestBindSettingsRegistersExactlyDeclaredFlags` were extended
+        (not just left alone) to assert `CmdClone`'s exact flag set, the
+        same discipline applied to `CmdWorktree` when it was created.
+  - [x] `untrack <org>/<repo>` (same file): clears `Tracked` without
+        touching any local data, exactly as specified. Errors if the repo
+        has no state entry at all (nothing to untrack); succeeds as a
+        no-op if it exists but is already untracked. **The "fails if the
+        config tracks the repo" check is deliberately not implemented
+        yet** — the config's `owners`/`repos` lists don't exist until the
+        next Phase 3 step — and is left as an `AIDEV:` comment at the
+        exact spot it needs to go, rather than silently dropped from the
+        plan or faked against a type that doesn't exist.
+  - [x] `newWorktreeFlagSet`/`resolveWorktreeConfig` renamed to
+        `newSubcommandFlagSet`/`resolveSubcommandConfig` (the latter now
+        takes a `cmd commandID` parameter instead of hardcoding
+        `cmdWorktree`), since `clone`/`untrack` need the exact same
+        flags>env>file>defaults machinery `worktree`'s subcommands already
+        had, just for a different settings subset. All three existing
+        `worktree` subcommands' call sites updated to pass `cmdWorktree`
+        explicitly; behavior unchanged (confirmed by the full existing
+        `worktree_test.go` suite passing with zero assertion changes).
+  - [x] `Run()`'s top-level dispatch extended from a single `if
+        args[0]=="worktree"` check to a `switch` over `worktree`/`clone`/
+        `untrack` — consistent with the "reserved words" tradeoff already
+        documented in this file's workspace-model section (an owner
+        literally named `clone` or `untrack` is now unreachable as a bare
+        `sync <owner>` the same way `worktree` already was).
+  - [x] **User-facing text intentionally changed, not deferred**: the
+        top-level `--help` USAGE block now lists `clone`/`untrack`. This is
+        new functionality, not a Phase-4 rename, so the pinned
+        `TestPinTopLevelHelp` golden text was updated deliberately (and
+        caught the change exactly as designed before the update).
+  - [x] New test coverage in `internal/cli/clone_test.go`:
+        `TestCmdCloneClonesAndTracks`, `TestCmdCloneSecondRunSkips`,
+        `TestCmdCloneMultipleArgsContinuesPastFailure` (one bad arg, one
+        good — both the exit code and that the good one still landed),
+        `TestCmdCloneHelpExitsZero`, `TestCmdUntrackClearsTrackedBit`
+        (and that nothing else in the entry changes),
+        `TestCmdUntrackNoLocalDataIsAnError`,
+        `TestCmdUntrackAlreadyUntrackedIsANoOp`,
+        `TestCmdUntrackNeverDeletesLocalClone`, and
+        `TestRunDispatchesToCloneAndUntrack` (through `Run()` itself, not
+        the `cmd*` functions directly). Reused `worktree_test.go`'s
+        existing `stubGhRepoView` helper rather than duplicating it (found
+        by `go vet` catching the redeclaration on the first build attempt).
+        Manually smoke-tested the real binary's `--help`,
+        `clone --help`, `untrack --help`, and both commands' bad-usage
+        output.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all eight `internal/` packages, every `TestPin*` passing.
+        **Process note:** this step was accidentally combined with the
+        prior "v2 state" step into one jj commit (see the commit
+        description) after forgetting to run `jj new` between them.
+        Reviewed as the full combined diff accordingly, including a
+        re-verification that the already-reviewed state-v2 content
+        (migration, corrupt backup, the two Tracked bug fixes) wasn't
+        altered by this step's edits to the same files — both bug-fix
+        regressions were reproduced again in a fresh scratch copy as part
+        of that re-verification. PASS.
 - [ ] jj: `jj new -m "feat(config): owners and repos in the workspace config"`.
   - [ ] `owners` (with per-owner overrides) and `repos` keys in the
         settings/file config, strictly validated.

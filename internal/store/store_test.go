@@ -124,6 +124,107 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLoadStateMigratesV1ToV2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	v1 := `{
+		"version": 1,
+		"org": "myorg",
+		"updatedAt": "2026-01-01T00:00:00Z",
+		"repos": {
+			"one": {"id": "R_one", "pushedAt": "2026-01-01T00:00:00Z", "syncedAt": "2026-01-02T00:00:00Z", "status": "cloned"},
+			"two": {"id": "R_two", "pushedAt": "2025-06-01T00:00:00Z", "syncedAt": "2025-06-02T00:00:00Z", "status": "archived", "archivePath": "archives/two.tar.gz"}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderrBuf bytes.Buffer
+	s := LoadState(path, "myorg", &stderrBuf)
+
+	if s.Version != Version {
+		t.Fatalf("Version = %d, want %d (current) after migration", s.Version, Version)
+	}
+	if len(s.Repos) != 2 {
+		t.Fatalf("got %d repos, want 2", len(s.Repos))
+	}
+	for name, rs := range s.Repos {
+		if !rs.Tracked {
+			t.Errorf("repo %q: Tracked = false, want true after migrating a v1 file (see LoadState's doc comment for why)", name)
+		}
+	}
+	// Field values from the v1 file must survive the migration untouched,
+	// not just the new Tracked bit.
+	if s.Repos["two"].Status != StatusArchived || s.Repos["two"].ArchivePath != "archives/two.tar.gz" {
+		t.Fatalf("migration altered an existing field: %+v", s.Repos["two"])
+	}
+	if stderrBuf.Len() == 0 {
+		t.Fatalf("expected a migration notice on stderr")
+	}
+
+	// The migrated state must actually be worth persisting: saving and
+	// reloading it should come back as v2 with Tracked still true, not
+	// silently re-migrate (there is no v2-to-v2 "migration" path, so this
+	// also confirms the current-version branch is reached, not re-falling
+	// into case 1).
+	if err := SaveState(path, s); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	var stderrBuf2 bytes.Buffer
+	reloaded := LoadState(path, "myorg", &stderrBuf2)
+	if stderrBuf2.Len() != 0 {
+		t.Fatalf("reloading an already-migrated v2 file should not warn/notice, got: %s", stderrBuf2.String())
+	}
+	if !reloaded.Repos["one"].Tracked {
+		t.Fatalf("Tracked did not survive a save/reload round trip")
+	}
+}
+
+func TestLoadStateCorruptBacksUpFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	garbage := []byte("not json at all")
+	if err := os.WriteFile(path, garbage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderrBuf bytes.Buffer
+	s := LoadState(path, "myorg", &stderrBuf)
+	if len(s.Repos) != 0 {
+		t.Fatalf("expected an empty state, got %+v", s)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backups []string
+	for _, e := range entries {
+		if e.Name() != "state.json" {
+			backups = append(backups, e.Name())
+		}
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected exactly one backup file, got %v", backups)
+	}
+	if !strings.HasPrefix(backups[0], "state.json.corrupt-") {
+		t.Fatalf("backup file %q does not match the expected naming", backups[0])
+	}
+
+	backupContent, err := os.ReadFile(filepath.Join(dir, backups[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backupContent) != string(garbage) {
+		t.Fatalf("backup content = %q, want the original corrupt content %q", backupContent, garbage)
+	}
+	if !strings.Contains(stderrBuf.String(), backups[0]) {
+		t.Fatalf("warning should name the backup path, got: %s", stderrBuf.String())
+	}
+}
+
 func TestLoadStateCorrupt(t *testing.T) {
 	dir := t.TempDir()
 
@@ -158,6 +259,31 @@ func TestLoadStateCorrupt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsTracked(t *testing.T) {
+	cases := []struct {
+		ownerConfigured bool
+		repoConfigured  bool
+		explicit        bool
+		want            bool
+	}{
+		{false, false, false, false},
+		{true, false, false, true},
+		{false, true, false, true},
+		{false, false, true, true},
+		{true, true, false, true},
+		{true, false, true, true},
+		{false, true, true, true},
+		{true, true, true, true},
+	}
+	for _, tc := range cases {
+		got := IsTracked(tc.ownerConfigured, tc.repoConfigured, tc.explicit)
+		if got != tc.want {
+			t.Errorf("IsTracked(owner=%v, repo=%v, explicit=%v) = %v, want %v",
+				tc.ownerConfigured, tc.repoConfigured, tc.explicit, got, tc.want)
+		}
 	}
 }
 

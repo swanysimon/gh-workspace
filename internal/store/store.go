@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const Version = 1
+const Version = 2
 
 type Status string
 
@@ -34,12 +34,24 @@ type State struct {
 // RepoState.PushedAt is written only after a fully successful sync of that
 // repo, so a failed repo is automatically eligible again next run with no
 // separate retry bookkeeping.
+//
+// Tracked records whether this repo was *explicitly* added -- via `clone`,
+// `worktree add`, or being named in the config's `repos` list -- as
+// opposed to being swept in only because its owner is configured for a
+// full sync. It is one of the two inputs to IsTracked (the other being
+// "is this repo's owner or the repo itself still configured right now"),
+// and it is sticky: once a repo has been explicitly added, it stays
+// tracked even if it's later dropped from the config, until something
+// calls Untrack on it. A v1 state file predates this field; LoadState's
+// migration sets it true for every repo already in a v1 file (see
+// LoadState's doc comment for why true, not false, is the safe default).
 type RepoState struct {
 	ID          string    `json:"id"`
 	PushedAt    time.Time `json:"pushedAt"`
 	SyncedAt    time.Time `json:"syncedAt"`
 	Status      Status    `json:"status"`
 	ArchivePath string    `json:"archivePath,omitempty"`
+	Tracked     bool      `json:"tracked"`
 }
 
 func OwnerDir(root, owner string) string    { return filepath.Join(root, owner) }
@@ -63,10 +75,25 @@ func AcquireLock(root, owner string) (release func(), err error) {
 	return func() { os.Remove(lp) }, nil
 }
 
-// LoadState never errors: a missing file yields an empty state, and a file
-// that fails to parse or carries the wrong version warns and yields an
-// empty state. Losing the cache costs one re-verify pass and destroys
-// nothing, which is strictly better than failing the run.
+// LoadState never errors: a missing file yields an empty state, a file
+// that fails to parse is backed up next to itself (so nothing is silently
+// lost) and yields an empty state, and a file with an unrecognized version
+// (newer than this binary knows, or garbage) warns and yields an empty
+// state. Losing the cache costs one re-verify pass and destroys nothing,
+// which is strictly better than failing the run.
+//
+// A v1 file (Version == 1, from before RepoState.Tracked existed) is
+// migrated in place: every repo already in it becomes Tracked = true, not
+// false. v1 had no owners/repos config and no explicit/implicit
+// distinction at all -- every entry in a v1 file came from either a full
+// owner sync or a `worktree add` that predates this field -- so there is
+// no way to correctly reconstruct which v1 entries would have been
+// "explicit" under the new rule. Erring toward Tracked = true means a
+// repo that already had real local data before upgrading keeps being
+// synced after upgrading, even if its owner isn't configured; erring
+// toward false risks `sync --tracked-only` silently stopping work on a
+// repo someone is actively using, which is a worse failure than some
+// redundant syncing.
 func LoadState(path, owner string, stderr io.Writer) State {
 	empty := State{Version: Version, Org: owner, Repos: map[string]RepoState{}}
 
@@ -77,10 +104,26 @@ func LoadState(path, owner string, stderr io.Writer) State {
 
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
-		fmt.Fprintf(stderr, "warning: state file %s is corrupt, starting fresh: %v\n", path, err)
+		backupPath := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+		if werr := os.WriteFile(backupPath, data, 0o600); werr != nil {
+			fmt.Fprintf(stderr, "warning: state file %s is corrupt, starting fresh: %v (also failed to back up the corrupt file: %v)\n", path, err, werr)
+		} else {
+			fmt.Fprintf(stderr, "warning: state file %s is corrupt, starting fresh: %v (corrupt file backed up to %s)\n", path, err, backupPath)
+		}
 		return empty
 	}
-	if s.Version != Version {
+
+	switch s.Version {
+	case Version:
+		// current version, nothing to do
+	case 1:
+		for name, rs := range s.Repos {
+			rs.Tracked = true
+			s.Repos[name] = rs
+		}
+		s.Version = Version
+		fmt.Fprintf(stderr, "notice: migrated state file %s from version 1 to %d; every repo already in it is now explicitly tracked (see AIDEV.md)\n", path, Version)
+	default:
 		fmt.Fprintf(stderr, "warning: state file %s has version %d, expected %d, starting fresh\n", path, s.Version, Version)
 		return empty
 	}
@@ -142,4 +185,17 @@ func ValidRepoName(name string) bool {
 		return false
 	}
 	return repoNamePattern.MatchString(name)
+}
+
+// IsTracked is the single rule every "never delete, never silently stop
+// syncing" invariant in this tool rests on: a repo is tracked if its
+// owner is configured for a full sync (ownerConfigured), if the repo
+// itself is explicitly named in the config right now (repoConfigured), or
+// if it was explicitly added at some point in the past and nothing has
+// untracked it since (explicit, from RepoState.Tracked) -- even if
+// neither config-based reason applies any more today. Dropping a repo
+// from the config does not stop it from being tracked if it was ever
+// explicitly added; only Untrack does that.
+func IsTracked(ownerConfigured, repoConfigured, explicit bool) bool {
+	return ownerConfigured || repoConfigured || explicit
 }

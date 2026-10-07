@@ -146,3 +146,235 @@ func TestProcessTaskArchiveComputesDir(t *testing.T) {
 		t.Fatalf("status = %q, want archived", results[0].Status)
 	}
 }
+
+// TestEnsureClonedMarksTracked confirms EnsureCloned's one piece of state
+// semantics that isn't just "clone it": every repo it clones is recorded
+// as Tracked: true, since EnsureCloned is -- by construction -- always an
+// explicit add (worktree add today, a standalone clone command later).
+func TestEnsureClonedMarksTracked(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(),
+	}
+
+	if err := EnsureCloned(context.Background(), env, repo, os.Stderr); err != nil {
+		t.Fatalf("EnsureCloned: %v", err)
+	}
+
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	rs, ok := st.Repos["repo1"]
+	if !ok {
+		t.Fatalf("no state entry written for repo1")
+	}
+	if !rs.Tracked {
+		t.Fatalf("Tracked = false, want true: %+v", rs)
+	}
+	if rs.Status != store.StatusCloned {
+		t.Fatalf("Status = %q, want %q", rs.Status, store.StatusCloned)
+	}
+}
+
+// TestSyncOneClonesWhenNothingLocal confirms the simplest case: no local
+// clone, no local archive, not archived upstream -> clone, Tracked: true.
+func TestSyncOneClonesWhenNothingLocal(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if res.Action != plan.Clone {
+		t.Fatalf("Action = %q, want %q", res.Action, plan.Clone)
+	}
+	if _, statErr := os.Stat(filepath.Join(env.ReposDir(), "repo1", ".git")); statErr != nil {
+		t.Fatalf("repo should have been cloned: %v", statErr)
+	}
+
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	rs := st.Repos["repo1"]
+	if !rs.Tracked {
+		t.Fatalf("Tracked = false, want true: %+v", rs)
+	}
+	if rs.Status != store.StatusCloned {
+		t.Fatalf("Status = %q, want %q", rs.Status, store.StatusCloned)
+	}
+}
+
+// TestSyncOneSkipsWhenUnchanged confirms an already-cloned repo whose
+// pushedAt matches state is skipped -- zero git calls -- and stays marked
+// Tracked.
+func TestSyncOneSkipsWhenUnchanged(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	pushedAt := time.Now().Truncate(time.Second)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: pushedAt, DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("first SyncOne: %v", err)
+	}
+
+	gitCalls := 0
+	wrapped := env
+	wrapped.Exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gitCalls++
+		return execx.Run(ctx, dir, name, args...)
+	}
+
+	res, err := SyncOne(context.Background(), wrapped, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("second SyncOne: %v", err)
+	}
+	if res.Action != plan.Skip {
+		t.Fatalf("Action = %q, want %q", res.Action, plan.Skip)
+	}
+	if gitCalls != 0 {
+		t.Fatalf("second SyncOne made %d git calls, want 0", gitCalls)
+	}
+
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	if !st.Repos["repo1"].Tracked {
+		t.Fatalf("Tracked should still be true after a skip")
+	}
+}
+
+// TestSyncOneFetchesWhenChanged confirms an already-cloned repo whose
+// pushedAt changed gets fetched (not re-cloned).
+func TestSyncOneFetchesWhenChanged(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("first SyncOne: %v", err)
+	}
+
+	// New commit upstream, and a later pushedAt to reflect it.
+	if err := os.WriteFile(filepath.Join(origin, "file.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execx.Run(context.Background(), origin, "git", "add", "file.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execx.Run(context.Background(), origin, "git", "commit", "--quiet", "-m", "second"); err != nil {
+		t.Fatal(err)
+	}
+	repo.PushedAt = time.Now()
+
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("second SyncOne: %v", err)
+	}
+	if res.Action != plan.Fetch {
+		t.Fatalf("Action = %q, want %q", res.Action, plan.Fetch)
+	}
+	got, err := os.ReadFile(filepath.Join(env.ReposDir(), "repo1", "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "v2\n" {
+		t.Fatalf("working tree file = %q, want %q (fast-forward did not happen)", got, "v2\n")
+	}
+}
+
+// TestSyncOneArchivesWhenArchivedUpstream confirms SyncOne tarballs an
+// archived-upstream repo (respecting env.Settings.Archive) instead of
+// always cloning it -- the behavior that distinguishes it from
+// EnsureCloned/worktree add.
+func TestSyncOneArchivesWhenArchivedUpstream(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, IsArchived: true, PushedAt: time.Now(),
+		DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if res.Action != plan.Archive {
+		t.Fatalf("Action = %q, want %q", res.Action, plan.Archive)
+	}
+	if _, statErr := os.Stat(filepath.Join(env.ReposDir(), "repo1")); !os.IsNotExist(statErr) {
+		t.Fatalf("clone dir should be gone after archiving, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(archive.TarballPath(env.ArchivesDir(), "repo1")); statErr != nil {
+		t.Fatalf("tarball missing: %v", statErr)
+	}
+
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	rs := st.Repos["repo1"]
+	if rs.Status != store.StatusArchived || !rs.Tracked {
+		t.Fatalf("got %+v, want archived and tracked", rs)
+	}
+}
+
+// TestSyncOneAdoptsExistingArchive confirms a repo that's already archived
+// locally (manifest + tarball on disk, no clone) is adopted rather than
+// re-cloned-then-re-archived.
+func TestSyncOneAdoptsExistingArchive(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, IsArchived: true, PushedAt: time.Now(),
+		DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("first SyncOne (creates the archive): %v", err)
+	}
+
+	gitCalls := 0
+	wrapped := env
+	wrapped.Exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gitCalls++
+		return execx.Run(ctx, dir, name, args...)
+	}
+
+	res, err := SyncOne(context.Background(), wrapped, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("second SyncOne: %v", err)
+	}
+	if res.Action != plan.AdoptArchived && res.Action != plan.Skip {
+		t.Fatalf("Action = %q, want %q or %q", res.Action, plan.AdoptArchived, plan.Skip)
+	}
+	if gitCalls != 0 {
+		t.Fatalf("adopting an existing archive made %d git calls, want 0", gitCalls)
+	}
+}
+
+// TestSyncOneDoesNotWriteStateOnFailure confirms a failed SyncOne call
+// leaves the existing state entry alone, matching how a full sync's
+// per-repo failure handling works (so the repo is retried next time
+// instead of recording a result for a run that didn't actually happen).
+func TestSyncOneDoesNotWriteStateOnFailure(t *testing.T) {
+	env := testEnv(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file:///does/not/exist", PushedAt: time.Now(),
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err == nil {
+		t.Fatalf("expected an error cloning a nonexistent repo")
+	}
+
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	if _, ok := st.Repos["repo1"]; ok {
+		t.Fatalf("state should not have an entry for repo1 after a failed sync")
+	}
+}

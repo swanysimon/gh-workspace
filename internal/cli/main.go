@@ -48,7 +48,7 @@ type config struct {
 // implementation (settings.go's old content, moved verbatim).
 type fileConfig = settings.FileConfig
 
-// errHelpRequested is resolveConfig/resolveWorktreeConfig's sentinel for
+// errHelpRequested is resolveConfig/resolveSubcommandConfig's sentinel for
 // "-h/--help was passed", replacing flag.ErrHelp: pflag.FlagSet has no
 // built-in help handling (that's cobra's job), so -h/--help is a plain bool
 // flag we register and check ourselves on every FlagSet.
@@ -61,8 +61,15 @@ var errHelpRequested = errors.New("help requested")
 // (including the root main.go, which can only call Run) needs to know any
 // of their names.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "worktree" {
-		return runWorktree(ctx, args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "worktree":
+			return runWorktree(ctx, args[1:], stdout, stderr)
+		case "clone":
+			return cmdClone(ctx, args[1:], stdout, stderr)
+		case "untrack":
+			return cmdUntrack(ctx, args[1:], stdout, stderr)
+		}
 	}
 
 	cfg, err := resolveConfig(args, stderr)
@@ -186,12 +193,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if r, ok := reposByName[res.Name]; ok {
 			id = r.ID
 		}
+		// Tracked carries forward from any existing entry: a repo explicitly
+		// added (worktree add, or a future clone command) must stay tracked
+		// through every ordinary sync run afterward, not get silently reset
+		// to false just because this run's RepoState literal doesn't
+		// otherwise know about it.
 		st.Repos[res.Name] = repoState{
 			ID:          id,
 			PushedAt:    res.PushedAt,
 			SyncedAt:    time.Now(),
 			Status:      res.Status,
 			ArchivePath: res.ArchivePath,
+			Tracked:     st.Repos[res.Name].Tracked,
 		}
 	}
 	st.UpdatedAt = time.Now()
@@ -298,6 +311,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "USAGE")
 	fmt.Fprintln(w, "  gh org-clone [flags] <org>")
+	fmt.Fprintln(w, "  gh org-clone clone [flags] <org>/<repo>...")
+	fmt.Fprintln(w, "  gh org-clone untrack [flags] <org>/<repo>")
 	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>")
 	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>")
 	fmt.Fprintln(w, "  gh org-clone worktree list [flags] <org>/<repo>|<org>")
@@ -366,7 +381,7 @@ func flagHelpsFromSet(fs *pflag.FlagSet, d config) []flagHelp {
 	return out
 }
 
-// newFlagSet builds the pflag.FlagSet every resolveConfig/resolveWorktreeConfig
+// newFlagSet builds the pflag.FlagSet every resolveConfig/resolveSubcommandConfig
 // caller starts from: output silenced (every error or usage message below is
 // printed exactly once, by us, never by pflag itself), plus the "help" flag
 // every command accepts. pflag has no built-in -h/--help handling -- that is
