@@ -10,12 +10,12 @@ import (
 	"testing"
 )
 
-func TestParseOrgRepo(t *testing.T) {
+func TestParseOwnerRepo(t *testing.T) {
 	tests := []struct {
-		in      string
-		wantOrg string
-		wantRep string
-		wantErr bool
+		in        string
+		wantOwner string
+		wantRep   string
+		wantErr   bool
 	}{
 		{"myorg/myrepo", "myorg", "myrepo", false},
 		{"myorg/my-repo.thing", "myorg", "my-repo.thing", false},
@@ -26,19 +26,19 @@ func TestParseOrgRepo(t *testing.T) {
 		{"myorg/-myrepo", "", "", true},
 	}
 	for _, tc := range tests {
-		org, repo, err := parseOrgRepo(tc.in)
+		owner, repo, err := parseOwnerRepo(tc.in)
 		if tc.wantErr {
 			if err == nil {
-				t.Errorf("parseOrgRepo(%q): expected an error", tc.in)
+				t.Errorf("parseOwnerRepo(%q): expected an error", tc.in)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseOrgRepo(%q): unexpected error: %v", tc.in, err)
+			t.Errorf("parseOwnerRepo(%q): unexpected error: %v", tc.in, err)
 			continue
 		}
-		if org != tc.wantOrg || repo != tc.wantRep {
-			t.Errorf("parseOrgRepo(%q) = (%q, %q), want (%q, %q)", tc.in, org, repo, tc.wantOrg, tc.wantRep)
+		if owner != tc.wantOwner || repo != tc.wantRep {
+			t.Errorf("parseOwnerRepo(%q) = (%q, %q), want (%q, %q)", tc.in, owner, repo, tc.wantOwner, tc.wantRep)
 		}
 	}
 }

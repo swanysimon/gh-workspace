@@ -38,7 +38,7 @@ func initTestRepo(t *testing.T) string {
 func testConfig(t *testing.T, root string) config {
 	cfg := defaultConfig()
 	cfg.Root = root
-	cfg.Org = "testorg"
+	cfg.Owner = "testorg"
 	cfg.Timeout = 30 * time.Second
 	return cfg
 }

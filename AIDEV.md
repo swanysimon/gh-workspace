@@ -401,7 +401,7 @@ step, whose user-visible differences are deliberate and recorded.
 
 ## Phase 2 — Extract packages (behavior identical)
 
-- [ ] jj: `jj new -m "refactor: extract internal packages"`. **Deviation,
+- [x] jj: `jj new -m "refactor: extract internal packages"`. **Deviation,
       recorded as it happens rather than only at the end**: given how large
       this phase is, it's being done as a sequence of per-package jj
       changes (dependency order: `execx` → `ghcli`/`gitcli` →
@@ -409,12 +409,22 @@ step, whose user-visible differences are deliberate and recorded.
       `main.go`), each reviewed before the next starts, rather than one
       single commit for the whole phase — matching how Phase 1's steps
       were handled, and keeping each reviewable on its own.
-- [ ] **Keep `package main` at the repo root.** `gh-extension-precompile`
+- [x] **Keep `package main` at the repo root.** `gh-extension-precompile`
       builds the root package by default. Moving `main` to `cmd/` would need
       a `build_script_override`. Verify against the action's docs before
       changing anything here. The root `main.go` becomes a few lines calling
       `internal/cli`.
-- [ ] Layout, under `internal/` per the Phase 0 library-reuse decision
+  - Checked `.github/workflows/release.yml`: it invokes
+    `cli/gh-extension-precompile` with no `build_script_override` and no
+    path override, i.e. it relies on the action's default, which builds
+    from the repo root. `main.go` stayed at the root throughout this
+    phase and is now a 10-line file calling `cli.Run`; confirmed
+    repeatedly (every extraction step) that `go build .` from the root
+    still produces a working binary. Did not literally re-read the
+    action's own source/docs beyond the workflow file that invokes it;
+    worth a final confirmation at release time, not blocking this far
+    out from a release.
+- [x] Layout, under `internal/` per the Phase 0 library-reuse decision
       (dependencies point downward only):
   - [x] `internal/execx`: `Exec` type (a plain func type, not an
         interface — same deliberate choice as Phase 1's `deps.go`, which
@@ -848,11 +858,67 @@ step, whose user-visible differences are deliberate and recorded.
       wiring, pinned tests unchanged, a hand-built binary's `--help`
       output matching the pinned text, and an accurate package doc
       comment) all passed on the first attempt.
-- [ ] Rename `org` → `owner` in internal identifiers here (the regex is the
+- [x] Rename `org` → `owner` in internal identifiers here (the regex is the
       same; orgs and users look the same to `gh`). Keep user-facing strings
       unchanged until Phase 4. Check `gh repo list <user>` against a real
       user account to confirm the output shape.
-- [ ] CI green.
+  - `config.Org` → `config.Owner`; `orgNamePattern` → `ownerNamePattern`;
+    `orgDir` → `ownerDir`; `parseOrgRepo` → `parseOwnerRepo` (and its
+    `org, repo` return values → `owner, repo`); `loadState`'s `org`
+    parameter → `owner`; every local variable named `org` in
+    `cmdWorktreeAdd`/`cmdWorktreeRemove`/`cmdWorktreeList` → `owner`. Two
+    comments describing internal mechanics (not user-facing text) were
+    reworded to match the "owner" terminology `store`/`engine` already
+    established in earlier steps: `acquireLock`'s "takes the per-org
+    lock"/"mutates an org's clones" → "per-owner lock"/"an owner's
+    clones", and `ensureClonedForWorktree`'s "must hold the org lock" →
+    "must hold the owner's lock".
+    `store.State.Org`'s field name and json tag were, correctly, left
+    alone — that's a different field (on-disk state, not resolved config),
+    out of scope here just as it was in the `store` extraction step. One
+    place both appear together (`main_test.go`'s
+    `state{Version: stateVersion, Org: cfg.Owner, ...}`) needed care to
+    rename only the right half.
+    **Every printed string was left exactly as it was** — flag names
+    (`--root`, `--config`), error text (`"org must not be empty"`,
+    `"org %q is not a valid GitHub org name"`, `"expected exactly one org
+    argument, got %d"`, `"expected <org>/<repo>, got %q"`), usage lines
+    (`"gh org-clone worktree add [flags] <org>/<repo> ..."`), the program
+    name (`gh-org-clone`), the env var prefix (`GH_ORG_CLONE_*`), and the
+    default data/config paths all still say "org," deliberately, per this
+    bullet's own instruction and Phase 4's rename plan. This is enforced,
+    not just promised: every `TestPin*` exact-text assertion (`--help`
+    output, error strings) passed with zero changes, which would have
+    failed immediately had any printed string drifted.
+    Did not check `gh repo list <user>` against a real user account (no
+    network access in this environment); noted as still-open verification
+    before relying on the owner/org-look-the-same-to-`gh` assumption in
+    Phase 3.
+    `go build`/`vet`/`gofmt`/`test -race` clean on the root package and all
+    eight `internal/` packages; manually re-smoke-tested the built binary's
+    `--help` and `worktree add --help` output by hand after the rename.
+    Reviewed by an independent agent: **FAIL on the first pass** — caught
+    that the local `org` variables inside `cmdWorktreeAdd`/
+    `cmdWorktreeRemove`/`cmdWorktreeList` themselves (as opposed to the
+    `config.Org` field and `parseOrgRepo`'s own name/return values, both of
+    which this entry had already renamed) were missed, exactly the kind of
+    thing a search for the type/function names alone doesn't catch. Fixed
+    across all three functions; re-verified clean on build/vet/fmt/test and
+    confirmed every one of the reviewer's other six checks (no stray
+    `cfg.Org`/`orgDir`/`orgNamePattern`/`parseOrgRepo` anywhere including
+    tests, `store.State.Org` genuinely untouched, every "org"-containing
+    printed string verified unchanged by grep and by a hand-built binary,
+    full pinned-test suite passing) had already passed on the first
+    attempt. Re-verified clean on a second review pass after the fix.
+- [ ] CI green. Not yet checked against the real GitHub Actions workflow
+      (`.github/workflows/ci.yml`): everything in this phase has been local
+      jj commits, nothing pushed. Every local signal CI would actually run
+      (`gofmt -l .`, `go vet ./...`, `go test -race -count=1 ./...`) is
+      clean on every commit in this phase, on both the final state and
+      (per each step's own verification) along the way — but a real CI run
+      on both `ubuntu-latest` and `macos-latest` (the workflow's matrix)
+      hasn't happened yet. Needs a push to a branch/PR before this can be
+      checked off for real.
 
 ## Phase 3 — Workspace model (still shipped as gh-org-clone)
 

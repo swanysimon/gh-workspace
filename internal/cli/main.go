@@ -1,7 +1,7 @@
 // Package cli is gh-org-clone's command dispatch, flag parsing, and help
 // text: the only package that knows command names (sync's bare <org> form,
 // "worktree add/remove/list"), and the only one that resolves this tool's
-// settings struct (config, wrapping settings.Settings plus Org and Deps)
+// settings struct (config, wrapping settings.Settings plus Owner and Deps)
 // from flags/env/a config file. Everything below it in the dependency
 // graph (execx, ghcli, gitcli, store, plan, archive, settings, engine)
 // takes plain arguments and has no notion of a "command"; this package is
@@ -36,12 +36,12 @@ const (
 	exitInterrupted = 130
 )
 
-var orgNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
+var ownerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
 
 type config struct {
 	settings.Settings
-	Org  string
-	Deps deps // subprocess + confirm-prompt seams; see deps.go
+	Owner string
+	Deps  deps // subprocess + confirm-prompt seams; see deps.go
 }
 
 // fileConfig is an alias for settings.FileConfig, which now holds the real
@@ -115,7 +115,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitRuntimeFail
 	}
 
-	st := loadState(statePath(cfg), cfg.Org, stderr)
+	st := loadState(statePath(cfg), cfg.Owner, stderr)
 
 	// gh's --limit is a hard cap with no "there was more" signal, so a
 	// listing that exactly fills it is the only hint of truncation.
@@ -221,7 +221,7 @@ func buildEnv(cfg config) engine.Env {
 		Confirm: func(repoName string, worktrees []worktreeStatus) (bool, error) {
 			return cfg.Deps.confirm(cfg, repoName, worktrees)
 		},
-		Owner:    cfg.Org,
+		Owner:    cfg.Owner,
 		Settings: cfg.Settings,
 	}
 }
@@ -428,7 +428,7 @@ func resolveConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, err
 	}
 
-	cfg.Org = positional[0]
+	cfg.Owner = positional[0]
 
 	if err := validateConfig(cfg); err != nil {
 		return config{}, err
@@ -447,11 +447,11 @@ func loadFileConfig(path string) (*fileConfig, error) {
 }
 
 func validateConfig(cfg config) error {
-	if cfg.Org == "" {
+	if cfg.Owner == "" {
 		return fmt.Errorf("org must not be empty")
 	}
-	if !orgNamePattern.MatchString(cfg.Org) {
-		return fmt.Errorf("org %q is not a valid GitHub org name", cfg.Org)
+	if !ownerNamePattern.MatchString(cfg.Owner) {
+		return fmt.Errorf("org %q is not a valid GitHub org name", cfg.Owner)
 	}
 	return settings.Validate(cfg.Settings)
 }

@@ -20,11 +20,11 @@ import (
 // forwarding; the other surviving shim in git.go (fetchRepo, besides
 // runGit) just hands cfg.Timeout/cfg.Deps.exec straight through, with no
 // risk of a "right value, wrong field" mix-up the way gh.go's listRepos
-// had between cfg.Org and cfg.MaxRepos.
+// had between cfg.Owner and cfg.MaxRepos.
 func TestCloneRepoShimComputesDestAndURL(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Root = t.TempDir()
-	cfg.Org = "shimorg"
+	cfg.Owner = "shimorg"
 	cfg.Protocol = "ssh"
 	mustMkReposDir(t, cfg)
 

@@ -22,21 +22,21 @@ const (
 	statusArchived = store.StatusArchived
 )
 
-func orgDir(cfg config) string      { return store.OwnerDir(cfg.Root, cfg.Org) }
-func reposDir(cfg config) string    { return store.ReposDir(cfg.Root, cfg.Org) }
-func archivesDir(cfg config) string { return store.ArchivesDir(cfg.Root, cfg.Org) }
-func statePath(cfg config) string   { return store.StatePath(cfg.Root, cfg.Org) }
-func lockPath(cfg config) string    { return store.LockPath(cfg.Root, cfg.Org) }
+func ownerDir(cfg config) string    { return store.OwnerDir(cfg.Root, cfg.Owner) }
+func reposDir(cfg config) string    { return store.ReposDir(cfg.Root, cfg.Owner) }
+func archivesDir(cfg config) string { return store.ArchivesDir(cfg.Root, cfg.Owner) }
+func statePath(cfg config) string   { return store.StatePath(cfg.Root, cfg.Owner) }
+func lockPath(cfg config) string    { return store.LockPath(cfg.Root, cfg.Owner) }
 
-// acquireLock takes the per-org lock that serializes every command which
-// mutates an org's clones or state (a sync run, and worktree add).
+// acquireLock takes the per-owner lock that serializes every command which
+// mutates an owner's clones or state (a sync run, and worktree add).
 func acquireLock(cfg config) (release func(), err error) {
-	return store.AcquireLock(cfg.Root, cfg.Org)
+	return store.AcquireLock(cfg.Root, cfg.Owner)
 }
 
 // loadState never errors; see store.LoadState.
-func loadState(path, org string, stderr io.Writer) state {
-	return store.LoadState(path, org, stderr)
+func loadState(path, owner string, stderr io.Writer) state {
+	return store.LoadState(path, owner, stderr)
 }
 
 // saveState writes atomically; see store.SaveState.

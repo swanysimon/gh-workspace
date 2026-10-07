@@ -23,7 +23,7 @@ const ghJSONFields = ghcli.JSONFields
 // this tool) or --source (forks are filtered client-side so -v can report
 // why a repo was skipped).
 func listRepos(ctx context.Context, cfg config) ([]ghRepo, error) {
-	return ghcli.ListRepos(ctx, cfg.Deps.exec, cfg.Org, cfg.MaxRepos)
+	return ghcli.ListRepos(ctx, cfg.Deps.exec, cfg.Owner, cfg.MaxRepos)
 }
 
 // getRepo looks up a single repo by "<org>/<repo>", for commands (worktree

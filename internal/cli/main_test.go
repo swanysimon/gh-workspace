@@ -41,13 +41,13 @@ func TestConfigDefaults(t *testing.T) {
 	}
 
 	want := defaultConfig()
-	want.Org = "myorg"
+	want.Owner = "myorg"
 	// config can no longer be compared whole with !=: Deps holds function
 	// values (see deps.go), and a struct type with a function-typed field is
 	// not a comparable type at all, regardless of the values inside it.
 	// Compare every other field instead; Deps' own wiring is exercised by
 	// the tests that set cfg.Deps.exec/confirm directly.
-	if cfg.Org != want.Org ||
+	if cfg.Owner != want.Owner ||
 		cfg.Root != want.Root ||
 		cfg.Concurrency != want.Concurrency ||
 		cfg.Timeout != want.Timeout ||
@@ -322,8 +322,8 @@ func TestRunNoGh(t *testing.T) {
 
 func TestRunLockHeld(t *testing.T) {
 	root := t.TempDir()
-	cfg := config{Settings: settings.Settings{Root: root}, Org: "testorg"}
-	if err := os.MkdirAll(orgDir(cfg), 0o700); err != nil {
+	cfg := config{Settings: settings.Settings{Root: root}, Owner: "testorg"}
+	if err := os.MkdirAll(ownerDir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(lockPath(cfg), []byte("999 sometime\n"), 0o600); err != nil {
@@ -390,7 +390,7 @@ func TestRunDryRunPlansRenameWithoutPerformingIt(t *testing.T) {
 	if err := cloneRepo(context.Background(), cfg, ghRepo{Name: "oldname", URL: "file://" + origin}); err != nil {
 		t.Fatal(err)
 	}
-	st := state{Version: stateVersion, Org: cfg.Org, Repos: map[string]repoState{
+	st := state{Version: stateVersion, Org: cfg.Owner, Repos: map[string]repoState{
 		"oldname": {ID: "R1", PushedAt: pushedAt, Status: statusCloned},
 	}}
 	if err := saveState(statePath(cfg), st); err != nil {
@@ -441,7 +441,7 @@ func TestRunDryRunPlansRenameWithoutPerformingIt(t *testing.T) {
 	if _, err := os.Stat(lockPath(cfg)); !os.IsNotExist(err) {
 		t.Fatalf("dry-run must not leave or take a lock, stat err = %v", err)
 	}
-	if got := loadState(statePath(cfg), cfg.Org, &stderr); got.Repos["oldname"].ID != "R1" {
+	if got := loadState(statePath(cfg), cfg.Owner, &stderr); got.Repos["oldname"].ID != "R1" {
 		t.Fatalf("dry-run must not rewrite state, got %+v", got.Repos)
 	}
 }
@@ -517,7 +517,7 @@ func TestConfigFlagsAfterOrg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
-	if cfg.Org != "myorg" || !cfg.DryRun || cfg.Concurrency != 3 {
+	if cfg.Owner != "myorg" || !cfg.DryRun || cfg.Concurrency != 3 {
 		t.Fatalf("flags after the org were not applied: %+v", cfg)
 	}
 }

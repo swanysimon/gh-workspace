@@ -57,24 +57,24 @@ func TestResolveSettingsShimReachesEmbeddedSettings(t *testing.T) {
 }
 
 // TestValidateConfigChecksOrgThenSettings confirms validateConfig's shim
-// actually checks both halves: the Org field it owns directly, and
+// actually checks both halves: the Owner field it owns directly, and
 // settings.Validate(cfg.Settings) for everything else.
 func TestValidateConfigChecksOrgThenSettings(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.Org = ""
+	cfg.Owner = ""
 	if err := validateConfig(cfg); err == nil {
 		t.Fatalf("expected an error for an empty org")
 	}
 
 	cfg = defaultConfig()
-	cfg.Org = "myorg"
+	cfg.Owner = "myorg"
 	cfg.Protocol = "ftp"
 	if err := validateConfig(cfg); err == nil {
 		t.Fatalf("expected an error for an invalid protocol (settings.Validate not reached)")
 	}
 
 	cfg = defaultConfig()
-	cfg.Org = "myorg"
+	cfg.Owner = "myorg"
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("valid org and settings should not error: %v", err)
 	}

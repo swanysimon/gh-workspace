@@ -73,7 +73,7 @@ func newWorktreeFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet, *
 
 // resolveWorktreeConfig applies the same root/protocol/timeout/config
 // precedence (flags > env > file > defaults) as the sync command, but only
-// for the settings cmdWorktree declares in settingsTable; cfg.Org is left
+// for the settings cmdWorktree declares in settingsTable; cfg.Owner is left
 // unset for the caller to fill in once it has parsed <org>/<repo> out of
 // the positional args. help is the pointer newWorktreeFlagSet returned; the
 // caller must have added every other flag it wants (e.g. --force) to fs
@@ -110,22 +110,23 @@ func resolveWorktreeConfig(fs *pflag.FlagSet, help *bool, args []string) (config
 	return cfg, positional, nil
 }
 
-// parseOrgRepo splits "<org>/<repo>" and validates both halves against the
-// same rules the sync command already trusts: orgNamePattern for the org,
-// validRepoName for the repo (it becomes a path segment and a git argument).
-func parseOrgRepo(s string) (org, repo string, err error) {
+// parseOwnerRepo splits "<org>/<repo>" and validates both halves against
+// the same rules the sync command already trusts: ownerNamePattern for the
+// org, validRepoName for the repo (it becomes a path segment and a git
+// argument).
+func parseOwnerRepo(s string) (owner, repo string, err error) {
 	parts := strings.SplitN(s, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("expected <org>/<repo>, got %q", s)
 	}
-	org, repo = parts[0], parts[1]
-	if !orgNamePattern.MatchString(org) {
-		return "", "", fmt.Errorf("org %q is not a valid GitHub org name", org)
+	owner, repo = parts[0], parts[1]
+	if !ownerNamePattern.MatchString(owner) {
+		return "", "", fmt.Errorf("org %q is not a valid GitHub org name", owner)
 	}
 	if !validRepoName(repo) {
 		return "", "", fmt.Errorf("repo %q is not a valid repo name", repo)
 	}
-	return org, repo, nil
+	return owner, repo, nil
 }
 
 func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -143,7 +144,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return exitUsage
 	}
-	org, repoName, err := parseOrgRepo(rest[0])
+	owner, repoName, err := parseOwnerRepo(rest[0])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitUsage
@@ -154,7 +155,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	cfg.Org = org
+	cfg.Owner = owner
 
 	if _, err := exec.LookPath("gh"); err != nil {
 		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
@@ -166,7 +167,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 
 	gctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	repo, err := getRepo(gctx, cfg, org+"/"+repoName)
+	repo, err := getRepo(gctx, cfg, owner+"/"+repoName)
 	cancel()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -297,7 +298,7 @@ func absWorktreePath(p string) (string, error) {
 // ensureClonedForWorktree clones a repo outside of a normal sync run and
 // writes the same state.json entry a sync run would, so a later sync doesn't
 // find a directory it doesn't remember creating. The caller must hold the
-// org lock. engine.EnsureCloned is the real implementation now.
+// owner's lock. engine.EnsureCloned is the real implementation now.
 func ensureClonedForWorktree(ctx context.Context, cfg config, repo ghRepo, stderr io.Writer) error {
 	return engine.EnsureCloned(ctx, buildEnv(cfg), repo, stderr)
 }
@@ -319,12 +320,12 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return exitUsage
 	}
-	org, repoName, err := parseOrgRepo(rest[0])
+	owner, repoName, err := parseOwnerRepo(rest[0])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	cfg.Org = org
+	cfg.Owner = owner
 	path, err := absWorktreePath(rest[1])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -338,7 +339,7 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 
 	dir := filepath.Join(reposDir(cfg), repoName)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		fmt.Fprintf(stderr, "no local clone of %s/%s at %s\n", org, repoName, dir)
+		fmt.Fprintf(stderr, "no local clone of %s/%s at %s\n", owner, repoName, dir)
 		return exitRuntimeFail
 	}
 
@@ -377,15 +378,15 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	if strings.Contains(rest[0], "/") {
-		org, repoName, err := parseOrgRepo(rest[0])
+		owner, repoName, err := parseOwnerRepo(rest[0])
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitUsage
 		}
-		cfg.Org = org
+		cfg.Owner = owner
 		dir := filepath.Join(reposDir(cfg), repoName)
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-			fmt.Fprintf(stderr, "no local clone of %s/%s at %s\n", org, repoName, dir)
+			fmt.Fprintf(stderr, "no local clone of %s/%s at %s\n", owner, repoName, dir)
 			return exitRuntimeFail
 		}
 		if err := printWorktrees(ctx, cfg, repoName, stdout); err != nil {
@@ -395,11 +396,11 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 		return exitSuccess
 	}
 
-	if !orgNamePattern.MatchString(rest[0]) {
+	if !ownerNamePattern.MatchString(rest[0]) {
 		fmt.Fprintf(stderr, "org %q is not a valid GitHub org name\n", rest[0])
 		return exitUsage
 	}
-	cfg.Org = rest[0]
+	cfg.Owner = rest[0]
 
 	entries, err := os.ReadDir(reposDir(cfg))
 	if err != nil {
