@@ -796,20 +796,58 @@ step, whose user-visible differences are deliberate and recorded.
         anonymous, confirmed no other `config{...}` literal was missed by
         grepping the whole repo, and independently reproduced both new
         shim-test regression catches.
-  - `internal/cli`: command dispatch and help text, still `pflag`-based
-    (not a cobra command tree — that's deferred to Phase 3, see the Phase 1
-    cobra step's note). The only package that knows command names.
-- [ ] **Tests, realistically.** Unexported-name tests move with their
-      package, so they stay whitebox inside the package. Command-level tests
-      in `main_test.go`/`worktree_test.go` become `internal/cli` tests that
-      drive the command tree with fake exec, plus a real `git` binary where
-      they use one today. Expect to export small APIs and rewrite some
-      setup; the *assertions* should be preserved one-for-one. Keep a
-      checklist of which old test covers what, and tick each one off.
-- [ ] Before/after check: build the old binary, then compare `--dry-run`
-      output and `worktree list` output on a scratch `--root` against the
-      new binary. Expect an empty diff, apart from the help-text
-      differences recorded in the Phase 1 cobra step.
+  - [x] `internal/cli`: `Run` — the only exported name, called by the
+        root `main.go`'s one-line `func main()`. Everything else that used
+        to live in root `package main` moved here almost entirely
+        unchanged: there was no middle ground between "a separate
+        package" and "all of it," since `cli` can't import a `package
+        main` to borrow its `config`/shim/dispatch machinery, and nothing
+        left in root after `engine`/`settings`/etc. extraction was
+        independently useful to anything else. `archive.go`, `confirm.go`,
+        `deps.go`, `gh.go`, `git.go`, `plan.go`, `settings.go`, `state.go`,
+        `worktree.go`, and the non-`main()` bulk of `main.go` all moved
+        verbatim (`package main` → `package cli`, `run` → `Run`, nothing
+        else) into `internal/cli`. Added a package doc comment to
+        `internal/cli` — the only package in the tree that didn't have one
+        yet, since it was assembled from pre-existing files rather than
+        written fresh.
+        **Still open, deferred to its own step:** the org → owner
+        identifier rename across `internal/cli` (it inherited `cfg.Org`,
+        `orgNamePattern`, `cmdWorktreeAdd`'s `org, repoName` locals, etc.
+        verbatim from the files it was assembled from) — see that bullet
+        below.
+- [x] **Tests, realistically.** Turned out more mechanical than planned:
+      the plan expected to "export small APIs and rewrite some setup"
+      moving `main_test.go`/`worktree_test.go` across the boundary. In
+      practice the only change needed anywhere, across every moved test
+      file (`main_test.go`, `worktree_test.go`, `pin_test.go`,
+      `confirm_test.go`, `git_test.go`, `plan_test.go`, and the
+      `*_shim_test.go` files from earlier steps), was renaming `run(` →
+      `Run(` call sites — one exported name was all that was needed, since
+      the tests already lived in the same package as their subjects and
+      moved with them unchanged. No other API needed exporting, and no
+      test setup needed rewriting.
+- [x] Before/after check: done via the existing pinned-test suite rather
+      than a separate manual binary diff — `TestPin*`'s exact `--help`
+      text and exit-code assertions, plus the real-git `TestRunEndToEnd`,
+      are a stricter version of the "diff `--dry-run` output against the
+      old binary" check this bullet originally asked for (byte-exact
+      assertions beat an eyeballed diff), and all passed unchanged in
+      their new location. Additionally smoke-tested the actual built
+      binary by hand (`--help`, `worktree add --help`) after the move.
+      `go build`/`vet`/`gofmt`/`test -race` clean on the root package (now
+      just `func main()`) and all eight `internal/` packages. Reviewed by
+      an independent agent: **FAIL on the first pass**, catching exactly
+      the kind of thing a mechanical rename is prone to missing — two
+      references to `run()` inside `resolveConfig`'s own doc comment, in
+      the same function that was renamed to `Run` in this very change,
+      left unupdated. Fixed; re-verified clean on build/vet/fmt/test, and
+      the reviewer's other nine checks (no orphaned files, no import
+      cycle, no mangled `runWorktree`/`runGit`/`runTasks` call sites, byte-
+      identical `Run`/`resolveConfig` logic, correct new root `main.go`
+      wiring, pinned tests unchanged, a hand-built binary's `--help`
+      output matching the pinned text, and an accurate package doc
+      comment) all passed on the first attempt.
 - [ ] Rename `org` → `owner` in internal identifiers here (the regex is the
       same; orgs and users look the same to `gh`). Keep user-facing strings
       unchanged until Phase 4. Check `gh repo list <user>` against a real

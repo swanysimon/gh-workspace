@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -223,9 +223,9 @@ func TestRunEndToEnd(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout, &stderr)
+	code := Run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
 	}
 
 	normalDir := filepath.Join(root, "testorg", "repos", "normal")
@@ -291,9 +291,9 @@ func TestRunEndToEnd(t *testing.T) {
 	ghCalls.Store(0)
 	gitCalls.Store(0)
 	var stdout2, stderr2 bytes.Buffer
-	code2 := run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout2, &stderr2)
+	code2 := Run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout2, &stderr2)
 	if code2 != exitSuccess {
-		t.Fatalf("second run() = %d, stderr=%s", code2, stderr2.String())
+		t.Fatalf("second Run() = %d, stderr=%s", code2, stderr2.String())
 	}
 	if got := ghCalls.Load(); got != 1 {
 		t.Fatalf("second run made %d gh calls, want 1", got)
@@ -311,9 +311,9 @@ func TestRunNoGh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", t.TempDir(), "testorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", t.TempDir(), "testorg"}, &stdout, &stderr)
 	if code != exitRuntimeFail {
-		t.Fatalf("run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
+		t.Fatalf("Run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "gh") {
 		t.Fatalf("stderr does not mention gh: %s", stderr.String())
@@ -331,9 +331,9 @@ func TestRunLockHeld(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", root, "testorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", root, "testorg"}, &stdout, &stderr)
 	if code == exitSuccess {
-		t.Fatalf("run() succeeded despite a held lock")
+		t.Fatalf("Run() succeeded despite a held lock")
 	}
 	if !strings.Contains(stderr.String(), lockPath(cfg)) {
 		t.Fatalf("stderr does not name the lock file: %s", stderr.String())
@@ -365,9 +365,9 @@ func TestRunDryRun(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "repo1") {
 		t.Fatalf("dry-run output missing repo1: %s", stdout.String())
@@ -419,9 +419,9 @@ func TestRunDryRunPlansRenameWithoutPerformingIt(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", cfg.Root, "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run() = %d, stderr=%s", code, stderr.String())
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "newname: skip") || !strings.Contains(stdout.String(), `rename from "oldname"`) {
 		t.Fatalf("dry-run output should plan the rename and then skip: %s", stdout.String())
@@ -473,9 +473,9 @@ func TestRunPrepassErrorsFailTheRun(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "testorg"}, &stdout, &stderr)
 	if code != exitRuntimeFail {
-		t.Fatalf("run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
+		t.Fatalf("Run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "collide") || !strings.Contains(stderr.String(), "not a valid repo name") {
 		t.Fatalf("stderr should report the collision and the invalid name: %s", stderr.String())
@@ -499,9 +499,9 @@ func TestRunWarnsWhenListingMayBeTruncated(t *testing.T) {
 		warn     bool
 	}{{"2", true}, {"3", false}} {
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "--max-repos", tc.maxRepos, "testorg"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"--root", t.TempDir(), "--protocol", "https", "--dry-run", "--max-repos", tc.maxRepos, "testorg"}, &stdout, &stderr)
 		if code != exitSuccess {
-			t.Fatalf("max-repos=%s: run() = %d, stderr=%s", tc.maxRepos, code, stderr.String())
+			t.Fatalf("max-repos=%s: Run() = %d, stderr=%s", tc.maxRepos, code, stderr.String())
 		}
 		if got := strings.Contains(stderr.String(), "may be truncated"); got != tc.warn {
 			t.Fatalf("max-repos=%s: truncation warning = %v, want %v; stderr=%s", tc.maxRepos, got, tc.warn, stderr.String())
@@ -531,14 +531,14 @@ func TestHelpExitsZero(t *testing.T) {
 		{"worktree", "list", "-h"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := run(context.Background(), args, &stdout, &stderr); code != exitSuccess {
-			t.Fatalf("run(%v) = %d, want %d; stderr=%s", args, code, exitSuccess, stderr.String())
+		if code := Run(context.Background(), args, &stdout, &stderr); code != exitSuccess {
+			t.Fatalf("Run(%v) = %d, want %d; stderr=%s", args, code, exitSuccess, stderr.String())
 		}
 		if !strings.Contains(strings.ToLower(stderr.String()), "usage") {
-			t.Fatalf("run(%v) printed no usage: %s", args, stderr.String())
+			t.Fatalf("Run(%v) printed no usage: %s", args, stderr.String())
 		}
 		if strings.Contains(stderr.String(), "help requested") {
-			t.Fatalf("run(%v) printed the flag package's error: %s", args, stderr.String())
+			t.Fatalf("Run(%v) printed the flag package's error: %s", args, stderr.String())
 		}
 	}
 }

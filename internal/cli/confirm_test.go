@@ -1,4 +1,4 @@
-package main
+package cli
 
 // This file tests confirm.go's one shim, defaultConfirmArchiveWithWorktrees,
 // directly: the real prompt implementation now lives in and is tested by

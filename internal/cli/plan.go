@@ -1,4 +1,4 @@
-package main
+package cli
 
 import "github.com/swanysimon/gh-org-clone/internal/plan"
 

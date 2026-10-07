@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -321,9 +321,9 @@ func TestRunDispatchesToWorktree(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"worktree", "list", "--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"worktree", "list", "--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run(worktree list ...) = %d, stderr=%s", code, stderr.String())
+		t.Fatalf("Run(worktree list ...) = %d, stderr=%s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), wtPath) {
 		t.Fatalf("output missing worktree path: %s", stdout.String())
@@ -617,7 +617,7 @@ func TestWorktreeAddAppliesTimeoutToGhLookup(t *testing.T) {
 // double-dash style with real (config-resolved) defaults.
 func TestWorktreeHelpUsesGhFlagStyle(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"worktree", "remove", "--help"}, &stdout, &stderr); code != exitSuccess {
+	if code := Run(context.Background(), []string{"worktree", "remove", "--help"}, &stdout, &stderr); code != exitSuccess {
 		t.Fatalf("exit = %d", code)
 	}
 	help := stderr.String()

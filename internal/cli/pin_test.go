@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -37,9 +37,9 @@ func TestPinTopLevelHelp(t *testing.T) {
 	_, root := homeFor(t)
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--help"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--help"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run(--help) = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
+		t.Fatalf("Run(--help) = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("--help wrote to stdout, want stderr only: %q", stdout.String())
@@ -112,9 +112,9 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), tc.args, &stdout, &stderr)
+			code := Run(context.Background(), tc.args, &stdout, &stderr)
 			if code != exitSuccess {
-				t.Fatalf("run(%v) = %d, want %d; stderr=%s", tc.args, code, exitSuccess, stderr.String())
+				t.Fatalf("Run(%v) = %d, want %d; stderr=%s", tc.args, code, exitSuccess, stderr.String())
 			}
 			if stderr.String() != tc.want {
 				t.Fatalf("%v output changed.\ngot:\n%s\nwant:\n%s", tc.args, stderr.String(), tc.want)
@@ -142,9 +142,9 @@ func TestPinWorktreeUsageOnBadInvocation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), tc.args, &stdout, &stderr)
+			code := Run(context.Background(), tc.args, &stdout, &stderr)
 			if code != exitUsage {
-				t.Fatalf("run(%v) = %d, want %d; stderr=%s", tc.args, code, exitUsage, stderr.String())
+				t.Fatalf("Run(%v) = %d, want %d; stderr=%s", tc.args, code, exitUsage, stderr.String())
 			}
 			if stderr.String() != tc.want {
 				t.Fatalf("%v usage output changed.\ngot:\n%s\nwant:\n%s", tc.args, stderr.String(), tc.want)
@@ -157,7 +157,7 @@ func TestPinWorktreeUsageOnBadInvocation(t *testing.T) {
 // exitSuccess/exitUsage/exitRuntimeFail/exitInterrupted constants in
 // main.go) against the real entry points. exitSuccess already has coverage
 // elsewhere (TestHelpExitsZero); this adds every case that had none:
-// exitUsage from run() itself (as opposed to from resolveConfig in
+// exitUsage from Run() itself (as opposed to from resolveConfig in
 // isolation, which TestConfigRejects already checks), exitInterrupted (no
 // prior coverage at all), and a second exitRuntimeFail case for symmetry
 // with the pre-existing TestRunNoGh (kept here so all four exit codes are
@@ -166,9 +166,9 @@ func TestPinExitCodes(t *testing.T) {
 	t.Run("usage: no org argument", func(t *testing.T) {
 		homeFor(t)
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{}, &stdout, &stderr)
+		code := Run(context.Background(), []string{}, &stdout, &stderr)
 		if code != exitUsage {
-			t.Fatalf("run([]) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+			t.Fatalf("Run([]) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 		}
 		if !strings.Contains(stderr.String(), "expected exactly one org argument, got 0") {
 			t.Fatalf("stderr missing the expected error: %s", stderr.String())
@@ -178,27 +178,27 @@ func TestPinExitCodes(t *testing.T) {
 	t.Run("usage: two positional arguments", func(t *testing.T) {
 		homeFor(t)
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"a", "b"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"a", "b"}, &stdout, &stderr)
 		if code != exitUsage {
-			t.Fatalf("run(a, b) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+			t.Fatalf("Run(a, b) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 		}
 	})
 
 	t.Run("usage: unknown flag", func(t *testing.T) {
 		homeFor(t)
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"--nope", "myorg"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"--nope", "myorg"}, &stdout, &stderr)
 		if code != exitUsage {
-			t.Fatalf("run(--nope) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+			t.Fatalf("Run(--nope) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 		}
 	})
 
 	t.Run("usage: invalid flag value", func(t *testing.T) {
 		homeFor(t)
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"--protocol", "ftp", "myorg"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"--protocol", "ftp", "myorg"}, &stdout, &stderr)
 		if code != exitUsage {
-			t.Fatalf("run(--protocol ftp) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+			t.Fatalf("Run(--protocol ftp) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 		}
 	})
 
@@ -206,9 +206,9 @@ func TestPinExitCodes(t *testing.T) {
 		homeFor(t)
 		t.Setenv("PATH", t.TempDir())
 		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"--root", t.TempDir(), "myorg"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"--root", t.TempDir(), "myorg"}, &stdout, &stderr)
 		if code != exitRuntimeFail {
-			t.Fatalf("run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
+			t.Fatalf("Run() = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
 		}
 	})
 
@@ -225,12 +225,12 @@ func TestPinExitCodes(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // already canceled before run() ever starts
+		cancel() // already canceled before Run() ever starts
 
 		var stdout, stderr bytes.Buffer
-		code := run(ctx, []string{"--root", t.TempDir(), "myorg"}, &stdout, &stderr)
+		code := Run(ctx, []string{"--root", t.TempDir(), "myorg"}, &stdout, &stderr)
 		if code != exitInterrupted {
-			t.Fatalf("run() with a pre-canceled context = %d, want %d; stdout=%s stderr=%s",
+			t.Fatalf("Run() with a pre-canceled context = %d, want %d; stdout=%s stderr=%s",
 				code, exitInterrupted, stdout.String(), stderr.String())
 		}
 	})
@@ -254,9 +254,9 @@ func TestPinDashDashEndsFlagParsing(t *testing.T) {
 		// outright. Two tokens do discriminate: if "--" were not honored
 		// past the first one, "-second" would be parsed as an unknown flag
 		// instead of reaching the "too many positional args" check.
-		code := run(context.Background(), []string{"--", "validorg", "-second"}, &stdout, &stderr)
+		code := Run(context.Background(), []string{"--", "validorg", "-second"}, &stdout, &stderr)
 		if code != exitUsage {
-			t.Fatalf("run(-- validorg -second) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+			t.Fatalf("Run(-- validorg -second) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 		}
 		if strings.Contains(stderr.String(), "flag provided but not defined") {
 			t.Fatalf("\"-second\" was parsed as a flag instead of a second positional arg: %s", stderr.String())
@@ -334,9 +334,9 @@ func TestPinArchiveFalseEndToEnd(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--root", t.TempDir(), "--dry-run", "--archive=false", "myorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", t.TempDir(), "--dry-run", "--archive=false", "myorg"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run() = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
+		t.Fatalf("Run() = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "archived: clone (") {
 		t.Fatalf("--archive=false should plan a clone for an archived repo, got:\n%s", stdout.String())
@@ -357,30 +357,30 @@ func TestPinSingleDashLongFlagNoLongerAccepted(t *testing.T) {
 	homeFor(t)
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"-root", t.TempDir(), "myorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"-root", t.TempDir(), "myorg"}, &stdout, &stderr)
 	if code != exitUsage {
-		t.Fatalf("run(-root ...) = %d, want %d (single-dash long flags are no longer accepted); stderr=%s", code, exitUsage, stderr.String())
+		t.Fatalf("Run(-root ...) = %d, want %d (single-dash long flags are no longer accepted); stderr=%s", code, exitUsage, stderr.String())
 	}
 
 	// -v and -h remain valid single-dash shorthands.
-	code = run(context.Background(), []string{"-v", "-h"}, &stdout, &stderr)
+	code = Run(context.Background(), []string{"-v", "-h"}, &stdout, &stderr)
 	if code != exitSuccess {
-		t.Fatalf("run(-v -h) = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
+		t.Fatalf("Run(-v -h) = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
 	}
 }
 
 // TestPinUsageErrorPrintedOnce records a deliberate fix, not a preserved
 // bug: the old stdlib-flag implementation printed a raw flag-parse error's
 // text twice on an unknown flag (once from its own internal failf, once
-// from run() after resolveConfig returned). The ported version prints it
+// from Run() after resolveConfig returned). The ported version prints it
 // exactly once.
 func TestPinUsageErrorPrintedOnce(t *testing.T) {
 	homeFor(t)
 
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--nope", "myorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--nope", "myorg"}, &stdout, &stderr)
 	if code != exitUsage {
-		t.Fatalf("run(--nope) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+		t.Fatalf("Run(--nope) = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
 	}
 	if n := strings.Count(stderr.String(), "unknown flag: --nope"); n != 1 {
 		t.Fatalf("expected the error text exactly once, got %d occurrences:\n%s", n, stderr.String())
