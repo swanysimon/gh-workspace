@@ -1085,12 +1085,86 @@ Each bullet group is its own jj change.
         altered by this step's edits to the same files — both bug-fix
         regressions were reproduced again in a fresh scratch copy as part
         of that re-verification. PASS.
-- [ ] jj: `jj new -m "feat(config): owners and repos in the workspace config"`.
-  - [ ] `owners` (with per-owner overrides) and `repos` keys in the
-        settings/file config, strictly validated.
-  - [ ] Expand a leading `~/` in `root` and `worktreeRoot` from every
-        source (flag, env, file) before the absolute-path check. Test that
-        `~user/`, `$HOME` and relative paths are still rejected.
+- [x] jj: `jj new -m "feat(config): owners and repos in the workspace config"`.
+  - [x] `owners` (`[]OwnerConfig{Name, IncludeForks, Archive, MaxRepos}`,
+        each a per-owner override of the matching global default) and
+        `repos` (`[]string`, `"<owner>/<repo>"` entries) added to
+        `settings.FileConfig`. Strictly validated inside `LoadFileConfig`
+        itself (not deferred to a later caller step) via a new
+        `validateOwnersAndRepos`: every owner name and every repo's owner
+        half must satisfy a new exported `settings.ValidOwnerName`; every
+        repo's name half must satisfy `store.ValidRepoName`; duplicate
+        owners and duplicate repos are both hard errors. Unknown keys
+        inside an owner object are already caught for free by the
+        existing top-level `json.Decoder.DisallowUnknownFields()`, which
+        recurses into nested structs.
+  - [x] **Deliberate refactor alongside this**: moved the owner-name regex
+        that `internal/cli` had been keeping locally (`ownerNamePattern`)
+        into `internal/settings` as the new exported `ValidOwnerName`,
+        since the config's `owners`/`repos` validation needed the exact
+        same rule and duplicating a regex that must stay in sync in two
+        packages was worse than importing it. All three `cli` call sites
+        (`validateConfig`, `parseOwnerRepo`, `cmdWorktreeList`) now call
+        `settings.ValidOwnerName` instead; the local `ownerNamePattern` var
+        and its `regexp` import were deleted from `internal/cli` entirely
+        — confirmed no stale references remain anywhere, including
+        comments.
+  - [x] `settings.ExpandHome(path) (string, error)`: expands a leading
+        literal `~/` only. `~user/` and `$HOME` are deliberately left
+        untouched (and therefore still rejected by the absolute-path
+        check), matching the plan's explicit requirement, not a shell's
+        full tilde-expansion semantics. Wired into `internal/cli` via a
+        new shared `expandConfigPaths(cfg *config) error`, called once
+        after `resolveSettings` finishes and before validation in both
+        `resolveConfig` (sync) and `resolveSubcommandConfig`
+        (worktree/clone/untrack) — expanding the single already-resolved
+        value once, after flag>env>file precedence has already picked a
+        winner, has the same effect as expanding at each individual source
+        and is simpler. `worktreeRoot` doesn't exist as a setting yet (it's
+        the next Phase 3 step's job to introduce it), so only `root` is
+        expanded for now; `expandConfigPaths` is where `worktreeRoot` will
+        get the identical treatment once it exists.
+  - [x] New tests: `internal/settings/settings_test.go` gained
+        `TestLoadFileConfigAcceptsValidOwnersAndRepos`,
+        `TestLoadFileConfigRejectsInvalidOwnersAndRepos` (9 subcases:
+        invalid/duplicate owner, missing slash, empty owner/name half,
+        invalid owner/name half, duplicate repo, unknown key inside an
+        owner object), `TestValidOwnerName`, `TestExpandHome` (6 subcases
+        including the three the plan calls out by name: `~user/`, `$HOME`,
+        a plain relative path, all unchanged/still-rejected). Also had to
+        add an explicit `owners`/`repos` exemption to the existing
+        `TestSettingsTableConfigKeysMatchFileConfig`'s reverse-direction
+        check (every `FileConfig` field must be claimed by a
+        `settingsTable` entry) — found by running the suite, not
+        anticipated in advance: `owners`/`repos` are structural config-only
+        keys with no flag/env equivalent by design, so they were never
+        going to have a `settingsTable` entry claiming them, and the test
+        needed to say so explicitly rather than silently special-case them
+        by accident.
+        `internal/cli/main_test.go` gained three new `TestConfigRejects`
+        subcases (invalid owner in config, malformed repos entry, plus the
+        three not-expanded cases above re-verified at the `resolveConfig`
+        level too) and three new standalone tests:
+        `TestConfigExpandsHomeInRoot`, `TestConfigExpandsHomeInRootFromConfigFile`,
+        `TestConfigAcceptsValidOwnersAndRepos`.
+        `internal/cli/worktree_test.go` gained
+        `TestResolveSubcommandConfigExpandsHomeInRoot`, pinning that the
+        shared `expandConfigPaths` helper actually runs on the
+        worktree/clone/untrack path too, not just sync's — confirmed this
+        test is not vacuous by temporarily reverting the `expandConfigPaths`
+        call in `resolveConfig` and `resolveSubcommandConfig` and watching
+        both new tests fail with the expected "must be an absolute path"
+        error, then restoring.
+        Manually smoke-tested the real binary: a config file with
+        `"root": "~/configtest-root"` plus valid `owners`/`repos` passes
+        validation and proceeds to the (expected, no-network-here) `gh`
+        call; a config file with an invalid owner name is rejected with
+        the expected error text and exit code `2`.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package and
+        all eight `internal/` packages. Independently reviewed: PASS
+        (including the reviewer independently re-verifying `ExpandHome`
+        and `DisallowUnknownFields`'s nested-struct recursion with its own
+        throwaway programs, not just reading the tests).
 - [ ] jj: `jj new -m "feat(sync): workspace-wide and tracked-only sync"`.
   - [ ] `sync` with no args: configured owners (one listing each) +
         explicit repos outside them.

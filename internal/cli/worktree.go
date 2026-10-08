@@ -103,6 +103,9 @@ func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args 
 	if err := resolveSettings(&cfg, cmd, fs, bound, fc); err != nil {
 		return config{}, nil, err
 	}
+	if err := expandConfigPaths(&cfg); err != nil {
+		return config{}, nil, err
+	}
 
 	if err := settings.Validate(cfg.Settings); err != nil {
 		return config{}, nil, err
@@ -112,16 +115,16 @@ func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args 
 }
 
 // parseOwnerRepo splits "<org>/<repo>" and validates both halves against
-// the same rules the sync command already trusts: ownerNamePattern for the
-// org, validRepoName for the repo (it becomes a path segment and a git
-// argument).
+// the same rules the sync command already trusts: settings.ValidOwnerName
+// for the org, validRepoName for the repo (it becomes a path segment and a
+// git argument).
 func parseOwnerRepo(s string) (owner, repo string, err error) {
 	parts := strings.SplitN(s, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("expected <org>/<repo>, got %q", s)
 	}
 	owner, repo = parts[0], parts[1]
-	if !ownerNamePattern.MatchString(owner) {
+	if !settings.ValidOwnerName(owner) {
 		return "", "", fmt.Errorf("org %q is not a valid GitHub org name", owner)
 	}
 	if !validRepoName(repo) {
@@ -397,7 +400,7 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 		return exitSuccess
 	}
 
-	if !ownerNamePattern.MatchString(rest[0]) {
+	if !settings.ValidOwnerName(rest[0]) {
 		fmt.Fprintf(stderr, "org %q is not a valid GitHub org name\n", rest[0])
 		return exitUsage
 	}

@@ -1,6 +1,8 @@
 package settings
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -59,7 +61,15 @@ func TestSettingsTableConfigKeysMatchFileConfig(t *testing.T) {
 			claimed[s.configKey] = true
 		}
 	}
+	// "owners" and "repos" are deliberately exempt: unlike every other
+	// FileConfig field, they're structural (lists), have no flag/env
+	// equivalent, and aren't resolved through settingsTable at all --
+	// see FileConfig's doc comment.
+	exempt := map[string]bool{"owners": true, "repos": true}
 	for tag := range jsonTagToField {
+		if exempt[tag] {
+			continue
+		}
 		if !claimed[tag] {
 			t.Errorf("FileConfig json tag %q has no settingsTable entry claiming it", tag)
 		}
@@ -157,5 +167,116 @@ func TestBindSettingsRegistersExactlyDeclaredFlags(t *testing.T) {
 				t.Errorf("%s: BindSettings registered unexpected flag --%s", cmd, name)
 			}
 		}
+	}
+}
+
+func writeConfigFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadFileConfigAcceptsValidOwnersAndRepos(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"owners": [
+			{"name": "my-org"},
+			{"name": "other-org", "includeForks": true, "archive": false}
+		],
+		"repos": ["someone/useful-lib", "cli/cli"]
+	}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("LoadFileConfig: %v", err)
+	}
+	if len(fc.Owners) != 2 || fc.Owners[0].Name != "my-org" || fc.Owners[1].Name != "other-org" {
+		t.Fatalf("Owners = %+v", fc.Owners)
+	}
+	if fc.Owners[1].IncludeForks == nil || !*fc.Owners[1].IncludeForks {
+		t.Fatalf("Owners[1].IncludeForks = %v, want true", fc.Owners[1].IncludeForks)
+	}
+	if fc.Owners[1].Archive == nil || *fc.Owners[1].Archive {
+		t.Fatalf("Owners[1].Archive = %v, want false", fc.Owners[1].Archive)
+	}
+	if len(fc.Repos) != 2 || fc.Repos[0] != "someone/useful-lib" || fc.Repos[1] != "cli/cli" {
+		t.Fatalf("Repos = %+v", fc.Repos)
+	}
+}
+
+func TestLoadFileConfigRejectsInvalidOwnersAndRepos(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"invalid owner name", `{"owners": [{"name": "not valid!"}]}`},
+		{"duplicate owner", `{"owners": [{"name": "my-org"}, {"name": "my-org"}]}`},
+		{"repo missing slash", `{"repos": ["noslash"]}`},
+		{"repo empty owner", `{"repos": ["/repo"]}`},
+		{"repo empty name", `{"repos": ["owner/"]}`},
+		{"repo invalid owner", `{"repos": ["not valid!/repo"]}`},
+		{"repo invalid name", `{"repos": ["owner/not valid!"]}`},
+		{"duplicate repo", `{"repos": ["owner/repo", "owner/repo"]}`},
+		{"unknown owner key", `{"owners": [{"name": "my-org", "bogus": true}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfigFile(t, tc.body)
+			if _, err := LoadFileConfig(path); err == nil {
+				t.Fatalf("LoadFileConfig(%s): want error, got nil", tc.body)
+			}
+		})
+	}
+}
+
+func TestValidOwnerName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"my-org", true},
+		{"a", true},
+		{"my-org-123", true},
+		{"", false},
+		{"-leading-dash", false},
+		{"has space", false},
+		{"has/slash", false},
+	}
+	for _, tc := range cases {
+		if got := ValidOwnerName(tc.name); got != tc.want {
+			t.Errorf("ValidOwnerName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory available in this environment")
+	}
+
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"tilde slash expands", "~/src/.workspace", filepath.Join(home, "src/.workspace")},
+		{"bare tilde unchanged", "~", "~"},
+		{"other user's home unchanged", "~someone/path", "~someone/path"},
+		{"dollar HOME unchanged", "$HOME/path", "$HOME/path"},
+		{"relative path unchanged", "relative/path", "relative/path"},
+		{"already absolute unchanged", "/already/absolute", "/already/absolute"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExpandHome(tc.input)
+			if err != nil {
+				t.Fatalf("ExpandHome(%q): %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Errorf("ExpandHome(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }

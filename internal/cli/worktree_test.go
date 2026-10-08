@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -630,5 +631,24 @@ func TestWorktreeHelpUsesGhFlagStyle(t *testing.T) {
 		if strings.Contains(help, unwanted) {
 			t.Fatalf("help should not contain %q:\n%s", unwanted, help)
 		}
+	}
+}
+
+// resolveSubcommandConfig shares expandConfigPaths with resolveConfig; this
+// pins that the shared helper actually runs on this path too, not just
+// sync's.
+func TestResolveSubcommandConfigExpandsHomeInRoot(t *testing.T) {
+	clearConfigEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	fs, help := newSubcommandFlagSet("gh org-clone worktree add", "usage", io.Discard)
+	cfg, _, err := resolveSubcommandConfig(fs, help, cmdWorktree, []string{"--root", "~/src/.workspace", "myorg/repo", "branch", "/tmp/x"})
+	if err != nil {
+		t.Fatalf("resolveSubcommandConfig: %v", err)
+	}
+	want := filepath.Join(home, "src/.workspace")
+	if cfg.Root != want {
+		t.Errorf("cfg.Root = %q, want %q", cfg.Root, want)
 	}
 }

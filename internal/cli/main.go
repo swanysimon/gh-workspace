@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"regexp"
 	"strconv"
 	"syscall"
 	"time"
@@ -35,8 +34,6 @@ const (
 	exitUsage       = 2
 	exitInterrupted = 130
 )
-
-var ownerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
 
 type config struct {
 	settings.Settings
@@ -442,6 +439,9 @@ func resolveConfig(args []string, stderr io.Writer) (config, error) {
 	if err := resolveSettings(&cfg, cmdSync, fs, bound, fc); err != nil {
 		return config{}, err
 	}
+	if err := expandConfigPaths(&cfg); err != nil {
+		return config{}, err
+	}
 
 	cfg.Owner = positional[0]
 
@@ -465,8 +465,24 @@ func validateConfig(cfg config) error {
 	if cfg.Owner == "" {
 		return fmt.Errorf("org must not be empty")
 	}
-	if !ownerNamePattern.MatchString(cfg.Owner) {
+	if !settings.ValidOwnerName(cfg.Owner) {
 		return fmt.Errorf("org %q is not a valid GitHub org name", cfg.Owner)
 	}
 	return settings.Validate(cfg.Settings)
+}
+
+// expandConfigPaths expands a leading "~/" in every settings.Settings path
+// value, regardless of whether the final resolved value came from a flag,
+// an env var, or the config file -- resolveSettings has already picked the
+// single winner by the time this runs, so expanding it once here covers
+// every source. Must run before settings.Validate's absolute-path check;
+// "~user/" and "$HOME" are deliberately left unexpanded (and so still
+// rejected by that check) -- see settings.ExpandHome.
+func expandConfigPaths(cfg *config) error {
+	expanded, err := settings.ExpandHome(cfg.Root)
+	if err != nil {
+		return err
+	}
+	cfg.Root = expanded
+	return nil
 }

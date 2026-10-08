@@ -12,10 +12,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/swanysimon/gh-org-clone/internal/store"
 )
 
 // Settings holds every value this package resolves.
@@ -80,15 +83,57 @@ func Validate(s Settings) error {
 }
 
 // FileConfig is the config file's shape; a nil field means the file didn't
-// set that key.
+// set that key. Owners and Repos have no flag/env representation at all --
+// unlike every other field here, they're not part of settingsTable, and
+// TestSettingsTableConfigKeysMatchFileConfig excludes them explicitly for
+// that reason -- since "which owners/repos does this workspace track" is a
+// list, not a scalar a single flag could sensibly set.
 type FileConfig struct {
-	Root         *string `json:"root"`
-	Concurrency  *int    `json:"concurrency"`
-	Timeout      *string `json:"timeout"` // parsed with time.ParseDuration
-	MaxRepos     *int    `json:"maxRepos"`
-	Protocol     *string `json:"protocol"`
-	IncludeForks *bool   `json:"includeForks"`
-	Archive      *bool   `json:"archive"`
+	Root         *string       `json:"root"`
+	Concurrency  *int          `json:"concurrency"`
+	Timeout      *string       `json:"timeout"` // parsed with time.ParseDuration
+	MaxRepos     *int          `json:"maxRepos"`
+	Protocol     *string       `json:"protocol"`
+	IncludeForks *bool         `json:"includeForks"`
+	Archive      *bool         `json:"archive"`
+	Owners       []OwnerConfig `json:"owners"`
+	Repos        []string      `json:"repos"`
+}
+
+// OwnerConfig is one entry in the config file's "owners" list: an owner to
+// sync wholesale, with optional per-owner overrides of the matching global
+// setting. A nil field means "use the global default," exactly like
+// FileConfig's own nil-means-unset fields.
+type OwnerConfig struct {
+	Name         string `json:"name"`
+	IncludeForks *bool  `json:"includeForks"`
+	Archive      *bool  `json:"archive"`
+	MaxRepos     *int   `json:"maxRepos"`
+}
+
+// ownerNamePattern matches a GitHub org or user login -- the same shape
+// either way, since gh's own API treats them identically for repo listing
+// purposes (see AIDEV.md).
+var ownerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
+
+func ValidOwnerName(name string) bool {
+	return ownerNamePattern.MatchString(name)
+}
+
+// ExpandHome expands a leading "~/" to the current user's home directory.
+// Only that exact prefix is handled -- "~user/" (someone else's home) and
+// "$HOME"-style environment-variable expansion are deliberately not
+// supported; this is a config value, not a shell command line, and doesn't
+// need to replicate everything a shell does with "~".
+func ExpandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expanding ~/: %w", err)
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 func ResolveConfigPath(flagValue string) string {
@@ -109,7 +154,10 @@ func ResolveConfigPath(flagValue string) string {
 }
 
 // LoadFileConfig returns nil, nil when the file does not exist. Any other
-// read or parse failure is a hard error — never guess at config intent.
+// read or parse failure is a hard error -- never guess at config intent --
+// including a structurally valid but semantically invalid owners/repos
+// list (an invalid owner name, a malformed "repos" entry, or a duplicate
+// of either).
 func LoadFileConfig(path string) (*FileConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -126,7 +174,46 @@ func LoadFileConfig(path string) (*FileConfig, error) {
 	if err := dec.Decode(&fc); err != nil {
 		return nil, fmt.Errorf("config file %s: %w", path, err)
 	}
+	if err := validateOwnersAndRepos(fc); err != nil {
+		return nil, fmt.Errorf("config file %s: %w", path, err)
+	}
 	return &fc, nil
+}
+
+// validateOwnersAndRepos is LoadFileConfig's strict check for the one part
+// of FileConfig that plain JSON decoding can't validate on its own:
+// "owners" entries must be valid, non-duplicated owner names, and "repos"
+// entries must be valid, non-duplicated "<owner>/<repo>" pairs.
+func validateOwnersAndRepos(fc FileConfig) error {
+	seenOwners := map[string]bool{}
+	for _, o := range fc.Owners {
+		if !ValidOwnerName(o.Name) {
+			return fmt.Errorf("owners: %q is not a valid GitHub org or user name", o.Name)
+		}
+		if seenOwners[o.Name] {
+			return fmt.Errorf("owners: %q is listed more than once", o.Name)
+		}
+		seenOwners[o.Name] = true
+	}
+
+	seenRepos := map[string]bool{}
+	for _, r := range fc.Repos {
+		owner, repo, ok := strings.Cut(r, "/")
+		if !ok || owner == "" || repo == "" {
+			return fmt.Errorf("repos: %q is not a valid \"<owner>/<repo>\" entry", r)
+		}
+		if !ValidOwnerName(owner) {
+			return fmt.Errorf("repos: %q: %q is not a valid GitHub org or user name", r, owner)
+		}
+		if !store.ValidRepoName(repo) {
+			return fmt.Errorf("repos: %q: %q is not a valid repo name", r, repo)
+		}
+		if seenRepos[r] {
+			return fmt.Errorf("repos: %q is listed more than once", r)
+		}
+		seenRepos[r] = true
+	}
+	return nil
 }
 
 // CommandID distinguishes which commands a setting applies to. Only two

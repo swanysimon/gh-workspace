@@ -134,10 +134,18 @@ func TestConfigRejects(t *testing.T) {
 
 	badFile := filepath.Join(t.TempDir(), "bad.json")
 	unknownKeyFile := filepath.Join(t.TempDir(), "unknown.json")
+	badOwnerFile := filepath.Join(t.TempDir(), "bad-owner.json")
+	badRepoFile := filepath.Join(t.TempDir(), "bad-repo.json")
 	if err := os.WriteFile(badFile, []byte("not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(unknownKeyFile, []byte(`{"nope": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badOwnerFile, []byte(`{"owners": [{"name": "not valid!"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badRepoFile, []byte(`{"repos": ["noslash"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,6 +161,11 @@ func TestConfigRejects(t *testing.T) {
 		{"negative max-repos", []string{"--max-repos", "-1", "myorg"}},
 		{"malformed config file", []string{"--config", badFile, "myorg"}},
 		{"unknown config key", []string{"--config", unknownKeyFile, "myorg"}},
+		{"invalid owner in config owners list", []string{"--config", badOwnerFile, "myorg"}},
+		{"malformed entry in config repos list", []string{"--config", badRepoFile, "myorg"}},
+		{"~user is not expanded, so still relative", []string{"--root", "~someone/path", "myorg"}},
+		{"$HOME is not expanded, so still relative", []string{"--root", "$HOME/path", "myorg"}},
+		{"plain relative root is still rejected", []string{"--root", "relative/path", "myorg"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,6 +173,57 @@ func TestConfigRejects(t *testing.T) {
 				t.Fatalf("expected an error, got none")
 			}
 		})
+	}
+}
+
+func TestConfigExpandsHomeInRoot(t *testing.T) {
+	clearConfigEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg, err := resolveConfig([]string{"--root", "~/src/.workspace", "myorg"}, os.Stderr)
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	want := filepath.Join(home, "src/.workspace")
+	if cfg.Root != want {
+		t.Errorf("cfg.Root = %q, want %q", cfg.Root, want)
+	}
+}
+
+func TestConfigExpandsHomeInRootFromConfigFile(t *testing.T) {
+	clearConfigEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{"root": "~/from-file"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr)
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	want := filepath.Join(home, "from-file")
+	if cfg.Root != want {
+		t.Errorf("cfg.Root = %q, want %q", cfg.Root, want)
+	}
+}
+
+func TestConfigAcceptsValidOwnersAndRepos(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("HOME", t.TempDir())
+
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	body := `{
+		"owners": [{"name": "my-org"}, {"name": "other-org", "includeForks": true}],
+		"repos": ["someone/useful-lib"]
+	}`
+	if err := os.WriteFile(configFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr); err != nil {
+		t.Fatalf("resolveConfig: %v", err)
 	}
 }
 
