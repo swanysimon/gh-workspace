@@ -22,8 +22,18 @@ type Exec func(ctx context.Context, dir, name string, args ...string) ([]byte, e
 
 // Run is Exec's real, production implementation. GIT_TERMINAL_PROMPT=0 and
 // GIT_ADVICE=0 keep a hung credential prompt or an advice message from ever
-// reaching a human who isn't there to see it — every caller through this
+// reaching a human who isn't there to see it -- every caller through this
 // package gets both, regardless of whether the command is git or gh.
+//
+// Stdout is returned even when err is non-nil (a change from this
+// function's original behavior, which discarded it on any non-zero exit).
+// This matters for ghcli.ViewRepos: a GraphQL query can come back with a
+// non-zero exit from gh while still printing a usable partial response body
+// (data for some aliases, errors for others) on stdout -- discarding it
+// unconditionally would make that case unparseable by construction. Every
+// existing caller already structures its own error handling to never read
+// the output on a non-nil error, so returning it now rather than nil is a
+// strictly backward-compatible widening, not a behavior change for them.
 func Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
@@ -36,7 +46,7 @@ func Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) 
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

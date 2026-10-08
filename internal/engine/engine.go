@@ -281,6 +281,59 @@ func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State
 	return tasks, seen, failed
 }
 
+// BuildExplicitTasks is BuildTasks' counterpart for repos resolved via a
+// batched ghcli.ViewRepos lookup instead of a full owner listing -- the
+// "explicit repos outside configured owners" half of a workspace-wide
+// sync, and the whole of sync --tracked-only. results must already be
+// filtered to this one owner (ViewRepos itself freely batches across
+// owners; grouping its results back by owner is the caller's job -- see
+// AIDEV.md "Multi-owner sync").
+//
+// A nil Repo (upstream reports the repo missing: gone, renamed without a
+// redirect, or no longer visible) produces a MissingUpstream task rather
+// than being decided by plan.Decide, which has no RepoFacts for a repo gh
+// can't resolve at all. A repo whose returned NameWithOwner's owner half
+// doesn't match the owner it was requested under (a transfer) is still
+// decided normally -- data is never moved between owner directories
+// automatically -- but the reason string notes the transfer so a human
+// sees it.
+func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State) []Task {
+	tasks := make([]Task, 0, len(results))
+	for _, r := range results {
+		prev, known := st.Repos[r.Name]
+
+		if r.Repo == nil {
+			tasks = append(tasks, Task{
+				Repo:   ghcli.Repo{Name: r.Name},
+				Action: plan.MissingUpstream,
+				Reason: "explicitly tracked repo no longer resolves upstream (gone, renamed without a redirect, or no longer visible)",
+				Prev:   prev,
+			})
+			continue
+		}
+
+		repo := *r.Repo
+		dir := filepath.Join(env.ReposDir(), r.Name)
+		_, dirErr := os.Stat(dir)
+		dirExists := dirErr == nil
+		_, gitErr := os.Stat(filepath.Join(dir, ".git"))
+		isGitDir := gitErr == nil
+		archiveExists := archive.LocalArchiveExists(env.ArchivesDir(), r.Name)
+
+		act, reason := plan.Decide(
+			plan.RepoFacts{Archived: repo.IsArchived, PushedAt: repo.PushedAt},
+			decidePrevState(prev, known),
+			dirExists, isGitDir, archiveExists,
+			plan.Options{Force: env.Settings.Force, Archive: env.Settings.Archive},
+		)
+		if owner, _, ok := strings.Cut(repo.NameWithOwner, "/"); ok && owner != "" && owner != r.Owner {
+			reason = fmt.Sprintf("owner on GitHub is now %q (transferred); local data stays under %q: %s", owner, r.Owner, reason)
+		}
+		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev})
+	}
+	return tasks
+}
+
 // fixupRename moves a renamed repo's directory and state entry without an
 // orphaned directory plus a full re-clone.
 func fixupRename(ctx context.Context, env Env, st store.State, oldName string, repo ghcli.Repo, stderr io.Writer) {
@@ -312,6 +365,144 @@ func renameApplies(env Env, oldName, newName string) bool {
 	return os.IsNotExist(err)
 }
 
+// OwnerWork is one owner's planned tasks for a multi-owner run (MultiOwnerRun),
+// plus enough to apply and save that owner's own results independently of
+// every other owner's. The caller builds this after successfully acquiring
+// that owner's lock and loading its State -- MultiOwnerRun does not do
+// either; it only runs tasks and calls Release once this owner's state has
+// been saved.
+type OwnerWork struct {
+	Owner   string
+	Env     Env
+	Tasks   []Task
+	State   store.State
+	Release func()
+}
+
+// OwnerOutcome is one owner's results from a MultiOwnerRun call, plus the
+// error (if any) saving its state.
+type OwnerOutcome struct {
+	Owner   string
+	Results []Result
+	SaveErr error
+}
+
+// MultiOwnerRun fans every owner's tasks into one shared pool of poolSize
+// workers -- "one worker pool for the whole run," not one pool per owner,
+// per AIDEV.md's "Multi-owner sync" -- and, as soon as the last task for a
+// given owner completes, applies that owner's results to its already-loaded
+// State, saves it, and calls its Release, so an interrupt loses progress
+// only for owners still in flight. A single shared progress reporter
+// covers every owner's actionable tasks, so a workspace-wide run reports
+// activity the same way a single-owner one does, just across more repos.
+//
+// State mutation here mirrors the single-owner path (Run()'s own result
+// loop, and SyncOne): a fresh repo ID (from the task that produced the
+// result) wins over whatever was stored, Tracked carries forward from
+// whatever was already recorded, and a failed task's repo keeps its
+// previous state entry untouched so it's retried next time.
+func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr io.Writer) []OwnerOutcome {
+	type routedTask struct {
+		ownerIdx int
+		task     Task
+	}
+	type routedResult struct {
+		ownerIdx int
+		result   Result
+	}
+
+	totalActionable := 0
+	remaining := make([]int, len(owners))
+	tasksByOwnerName := make([]map[string]Task, len(owners))
+	for i, ow := range owners {
+		remaining[i] = len(ow.Tasks)
+		byName := make(map[string]Task, len(ow.Tasks))
+		for _, t := range ow.Tasks {
+			byName[t.Repo.Name] = t
+			if t.Action != plan.Skip {
+				totalActionable++
+			}
+		}
+		tasksByOwnerName[i] = byName
+	}
+	progress := newProgressReporter(stderr, totalActionable)
+
+	if poolSize < 1 {
+		poolSize = 1
+	}
+	taskCh := make(chan routedTask)
+	resultCh := make(chan routedResult)
+
+	var wg sync.WaitGroup
+	for i := 0; i < poolSize; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for rt := range taskCh {
+				res := processTask(ctx, owners[rt.ownerIdx].Env, rt.task, progress)
+				resultCh <- routedResult{ownerIdx: rt.ownerIdx, result: res}
+			}
+		}()
+	}
+
+	go func() {
+		for i, ow := range owners {
+			for _, t := range ow.Tasks {
+				taskCh <- routedTask{ownerIdx: i, task: t}
+			}
+		}
+		close(taskCh)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	outcomes := make([]OwnerOutcome, len(owners))
+	for i, ow := range owners {
+		outcomes[i].Owner = ow.Owner
+	}
+	for rr := range resultCh {
+		i := rr.ownerIdx
+		outcomes[i].Results = append(outcomes[i].Results, rr.result)
+		remaining[i]--
+		if remaining[i] == 0 {
+			applyResultsToState(&owners[i].State, outcomes[i].Results, tasksByOwnerName[i])
+			outcomes[i].SaveErr = store.SaveState(owners[i].Env.StatePath(), owners[i].State)
+			if owners[i].Release != nil {
+				owners[i].Release()
+			}
+		}
+	}
+	return outcomes
+}
+
+// applyResultsToState is MultiOwnerRun's per-owner state update, factored
+// out so it can be unit-tested without a worker pool. A failed result's
+// repo is left alone -- whatever was there before stays, so it is retried
+// on the next run, exactly like the single-owner path's handling.
+func applyResultsToState(st *store.State, results []Result, tasksByName map[string]Task) {
+	for _, res := range results {
+		if res.Err != nil {
+			continue
+		}
+		id := st.Repos[res.Name].ID
+		if t, ok := tasksByName[res.Name]; ok && t.Repo.ID != "" {
+			id = t.Repo.ID
+		}
+		st.Repos[res.Name] = store.RepoState{
+			ID:          id,
+			PushedAt:    res.PushedAt,
+			SyncedAt:    time.Now(),
+			Status:      res.Status,
+			ArchivePath: res.ArchivePath,
+			Tracked:     st.Repos[res.Name].Tracked,
+		}
+	}
+	st.UpdatedAt = time.Now()
+}
+
 // Result carries a worker's outcome. Errors travel in this struct, never
 // out of a worker, so one repo's failure can never abort another's work.
 type Result struct {
@@ -340,12 +531,13 @@ func newProgressReporter(w io.Writer, total int) *progressReporter {
 }
 
 var actionVerbs = map[plan.Action]string{
-	plan.Clone:         "cloning",
-	plan.Fetch:         "fetching",
-	plan.Archive:       "archiving",
-	plan.AdoptArchived: "adopting existing archive",
-	plan.Unarchive:     "unarchiving (repo live again upstream)",
-	plan.NotARepo:      "checking",
+	plan.Clone:           "cloning",
+	plan.Fetch:           "fetching",
+	plan.Archive:         "archiving",
+	plan.AdoptArchived:   "adopting existing archive",
+	plan.Unarchive:       "unarchiving (repo live again upstream)",
+	plan.NotARepo:        "checking",
+	plan.MissingUpstream: "checking",
 }
 
 func (p *progressReporter) starting(name string, act plan.Action) {
@@ -498,6 +690,13 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 	case plan.NotARepo:
 		dir := filepath.Join(env.ReposDir(), repo.Name)
 		res.Err = fmt.Errorf("%s exists but is not a git repository; left untouched", dir)
+		return res
+
+	case plan.MissingUpstream:
+		res.Notes = append(res.Notes, t.Reason)
+		res.PushedAt = t.Prev.PushedAt
+		res.Status = t.Prev.Status
+		res.ArchivePath = t.Prev.ArchivePath
 		return res
 	}
 

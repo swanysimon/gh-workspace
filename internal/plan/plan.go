@@ -17,6 +17,14 @@ const (
 	AdoptArchived Action = "adopt-archived" // archive already on disk, just record it
 	Unarchive     Action = "unarchive"      // was archived locally, now live upstream
 	NotARepo      Action = "not-a-repo"     // dir exists, no .git — report, touch nothing
+	// MissingUpstream is for an explicitly tracked repo a batched
+	// repository(owner:, name:) lookup reports as gone, renamed without a
+	// redirect, or no longer visible -- the explicit-repo counterpart to a
+	// repo simply absent from an owner's listing: report it, touch
+	// nothing. Decide never returns this itself (it has no RepoFacts for a
+	// repo gh can't resolve at all); callers set it directly when a batch
+	// lookup's result is nil -- see engine.BuildExplicitTasks.
+	MissingUpstream Action = "missing-upstream"
 )
 
 // RepoFacts is what gh reports about a repo "right now."

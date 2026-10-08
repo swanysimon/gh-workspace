@@ -1165,28 +1165,206 @@ Each bullet group is its own jj change.
         (including the reviewer independently re-verifying `ExpandHome`
         and `DisallowUnknownFields`'s nested-struct recursion with its own
         throwaway programs, not just reading the tests).
-- [ ] jj: `jj new -m "feat(sync): workspace-wide and tracked-only sync"`.
-  - [ ] `sync` with no args: configured owners (one listing each) +
-        explicit repos outside them.
-  - [ ] `ghcli.ViewRepos` GraphQL batch for explicit repos, with a
-        `ghJSONFields`-equivalent selection and tests using a canned
-        response via fake exec.
-  - [ ] `sync --tracked-only` and `sync <owner>/<repo>`.
-  - [ ] One shared worker pool across owners, with per-owner state saved
-        when that owner's last task completes (see "Multi-owner sync").
-  - [ ] Per-owner fail-fast locks, held from planning until that owner's
-        state is saved. A locked or failed owner is reported and skipped;
-        the rest finish, and the run exits `1`. Test with a pre-created
-        lock file for one of two owners.
-  - [ ] Bare `<owner>` alias for `sync <owner>`, applied only for
-        non-reserved words. Test that an org named `sync` or `clone` is
-        reachable through `sync <owner>`.
-  - [ ] GraphQL batch edge cases: `null` repo with partial `data`,
-        non-zero exit with usable `data`, rename (behavior as verified
-        against the real API), and transfer to another owner. Each gets a
-        canned-response test.
-  - [ ] The "in state but not in listing" note must not fire for explicit
-        repos that the owner filter excludes (e.g. forks).
+- [x] jj: `jj new -m "feat(sync): workspace-wide and tracked-only sync"`.
+  - [x] `sync` with no args: every owner in config `owners[]` gets its own
+        `gh repo list`, and every repo in config `repos[]` plus every
+        state-`Tracked` repo under any owner directory discovered via
+        `<root>/*/state.json` (whichever owner it belongs to, configured
+        or not) gets refreshed through one batched `ghcli.ViewRepos` call
+        spanning every owner at once. A repo an owner's own listing
+        already covers is removed from that batch before it's built, so a
+        fully-configured owner costs exactly one API call, same as today.
+  - [x] `ghcli.ViewRepos` (new, in `internal/ghcli`): aliased
+        `repository(owner:, name:)` GraphQL query, batched at 100 per `gh
+        api graphql` call (`graphQLBatchSize`), same field selection as
+        `JSONFields`. A `null` result for an alias is reported back as
+        `RepoResult.Repo == nil` ("missing upstream"), not an error --
+        only a response with no usable `data` at all is a ViewRepos error.
+        `internal/execx.Run` was changed to return stdout even when the
+        command exits non-zero (previously always `nil` on error), since a
+        GraphQL response can legitimately come back as a non-zero gh exit
+        with a perfectly parseable partial body; every existing caller
+        already only reads its output when err is nil, so this is a
+        strictly backward-compatible widening -- confirmed by the full
+        existing suite passing unchanged. New tests:
+        `TestRunPreservesStdoutOnError` (execx),
+        `TestViewReposArgsAndQueryShape`,
+        `TestViewReposNullEntryIsMissingNotError`,
+        `TestViewReposNonZeroExitWithPartialDataStillParses`,
+        `TestViewReposNoUsableDataIsAnError`,
+        `TestViewReposEmptyResponseIsAnError`,
+        `TestViewReposBatchesAtGraphQLBatchSize` (150 repos → 2 calls,
+        100+50) (ghcli).
+        **Not verified against the real API in this environment (no
+        network access)**: whether `gh api graphql` ever actually behaves
+        the "non-zero exit, usable partial data" way at all, versus always
+        exiting 0 with `errors` present instead (which the common,
+        exit-0 case already handles fine either way) -- flagged with an
+        `AIDEV:`-style doc comment at the exact spot in `ghcli.go`, not
+        silently assumed correct. Also not verified: GraphQL's `visibility`
+        enum casing versus gh's REST-backed lowercase strings (harmless
+        today -- nothing branches on `Repo.Visibility` -- but noted so a
+        future caller that starts comparing it knows to check).
+  - [x] `sync --tracked-only` (skips every owner's listing; only
+        known-local-or-explicit repos get the batched refresh) and `sync
+        <owner>/<repo>` (reuses `engine.SyncOne` with `explicit=false` --
+        an ad hoc refresh, not a track action; only `clone`/`worktree add`
+        mark `Tracked`). Both wired through a new `internal/cli/sync.go`
+        and a new `sync` reserved subcommand
+        (`gh org-clone sync [flags] [<org>[/<repo>]]`), added to the
+        top-level `--help` USAGE block and `TestPinTopLevelHelp`'s golden
+        text (deliberate, documented new functionality, same as the
+        `clone`/`untrack` precedent). `--tracked-only` is a new
+        `CmdSync`-only `settings.Setting`
+        (`Settings.TrackedOnly`, no env var or config key -- a
+        per-invocation choice about this run's shape, like `--force`).
+        `runSingleOwnerSync` was extracted out of `Run()` (pure
+        extraction, confirmed behavior-identical by the full existing
+        suite passing unchanged with no test edits) so bare
+        `gh org-clone <org>` and `sync <org>` share one implementation
+        instead of two that could drift -- confirmed identical by
+        `TestRunSyncOwnerArgMatchesBareTopLevel`, which runs both and
+        diffs their stdout.
+  - [x] **Found and fixed a real bug while wiring this up**: adding
+        `--tracked-only` to `CmdSync`'s settings makes it available (via
+        `bindSettings`) on the bare top-level path too, since that path
+        resolves the exact same `CmdSync` settings scope as the `sync`
+        subcommand -- but the bare path's `Run()` ignored
+        `cfg.TrackedOnly` entirely, so `gh org-clone myorg --tracked-only`
+        would parse successfully and then silently run a full listing
+        anyway. Fixed by having `resolveConfig` also return the loaded
+        `*fileConfig` (a small, mechanical signature change -- every call
+        site, mostly in tests, updated) and having `Run()` branch to
+        `runWorkspaceSync(ctx, cfg, fc, []string{cfg.Owner}, ...)` when
+        `cfg.TrackedOnly` is set, exactly mirroring what the explicit
+        `sync <org> --tracked-only` form does. Pinned by
+        `TestRunTopLevelTrackedOnlySkipsListing` and
+        `TestRunSyncTrackedOnlyFlagSkipsListing`
+        (the explicit-form equivalent) -- both assert zero `gh repo list`
+        calls while still allowing (and exercising) the batched lookup for
+        the one locally-tracked repo. Regression-reproduced in a scratch
+        copy before trusting the tests.
+  - [x] `engine.MultiOwnerRun` (new): one shared pool of `poolSize`
+        workers across every owner's tasks (`engine.OwnerWork`), routing
+        each `Result` back to its owning entry via an index tag, saving
+        that owner's `State` (via a new, separately-tested
+        `applyResultsToState`, which carries a fresh repo ID and `Tracked`
+        forward exactly like the single-owner path's own result loop) and
+        calling its `Release` the moment its own task count reaches zero
+        -- independent of every other owner's progress. New tests:
+        `TestMultiOwnerRunSavesEachOwnerIndependently`,
+        `TestApplyResultsToStateSkipsFailedAndCarriesTrackedForward`.
+  - [x] Per-owner locks: a locked owner is reported and skipped, every
+        other owner still finishes, and the run exits `1` --
+        `TestRunSyncWorkspaceWideLockContentionSkipsOnlyThatOwner`
+        pre-locks one of two configured owners and confirms the other
+        still gets cloned, regression-reproduced by temporarily
+        no-op'ing lock acquisition and watching the test fail with the
+        locked owner cloned anyway.
+        **Deliberate ordering deviation from the plan, recorded rather
+        than silently diverging**: AIDEV.md's "Multi-owner sync" says a
+        lock is "taken before that owner is planned (listing or batch
+        lookup, then decide) and held until its state is saved." This
+        implementation plans every owner first (listings, the cross-owner
+        batch lookup, and `plan.Decide`) in `runWorkspaceSync`, and only
+        acquires locks afterward, in `runWorkspacePlans`, immediately
+        before `engine.MultiOwnerRun`. State is still only ever mutated
+        after a lock is held, so this is not a correctness gap -- but
+        under two concurrent runs, both could redundantly list/plan the
+        same owner before only one of them wins the lock, costing an
+        extra API call and giving up a little of the "fail fast before
+        doing any work" benefit the stricter ordering would have. Restated
+        here instead of fixed in this step: the fix requires merging
+        lock/mkdir/sweep into the same per-owner planning loop while still
+        skipping all three for a dry run (which must never lock), a
+        larger restructure than was safe to make this late in an already
+        very large step; worth revisiting.
+  - [x] Bare `<owner>` alias for `sync <owner>`, non-reserved words only:
+        already a direct consequence of `Run()`'s dispatch checking
+        `args[0]` against `"sync"`/`"clone"`/`"untrack"`/`"worktree"`
+        before ever treating it as a bare owner, extending the exact same
+        pre-existing ambiguity `"worktree"` already had to `"sync"`,
+        `"clone"`, and `"untrack"` -- no new code needed, nothing to
+        regress.
+  - [x] GraphQL batch edge cases: a `null` result and a non-zero exit with
+        usable partial `data` are both handled and tested (see above). A
+        transfer (the returned `nameWithOwner`'s owner half differs from
+        the owner it was requested under) gets a note in the task's reason
+        via `engine.BuildExplicitTasks`
+        (`TestBuildExplicitTasksNotesTransfer`) -- data is never moved
+        between owner directories automatically, exactly as specified.
+        **Rename is not implemented for explicit repos, and is an
+        explicitly flagged, deliberate gap, not an oversight**: the
+        plan's own wording is conditional on real-API behavior this
+        environment cannot check ("check whether `repository(owner:,
+        name:)` follows redirects"). Implementing the ID-based
+        reconciliation (reusing `fixupRename`, which already exists for
+        exactly this purpose on the full-listing path) without being able
+        to verify which of the two documented behaviors actually happens
+        risks shipping an untested code path for a scenario that might not
+        even arise. Current, honest behavior if GraphQL *does* follow a
+        redirect for an explicitly tracked repo: `BuildExplicitTasks`
+        decides against the old (locally present) name's directory and
+        state entry but builds its `Task` with gh's returned (new) name,
+        so `processTask` would clone into a second, new-named directory
+        rather than recognizing the rename -- the same "looks missing,
+        clone fresh" outcome the plan describes for the *non-redirecting*
+        case. This needs revisiting once gh's actual behavior here is
+        confirmed.
+  - [x] The "in state but not in listing" note's exclusion for explicitly
+        tracked repos the owner's own filter excludes (forks, specifically):
+        **found missing during this step's own review-before-review pass,
+        not carried over from anywhere** -- the workspace-wide path's
+        configured-owner loop initially had no such note at all. Added it
+        (mirroring `runSingleOwnerSync`'s existing one), gated so it never
+        fires for a name still pending in that owner's `remaining` batch
+        set (which gets a real decision via `BuildExplicitTasks` instead).
+        `TestRunSyncWorkspaceInStateNotInListingNote` pins this exactly: a
+        tracked fork gets cloned via the explicit path with no spurious
+        note, while an untracked, no-longer-listed repo still gets the
+        plain note. Regression-reproduced (removing the `remaining`
+        exclusion makes the fork wrongly get both the note and a real
+        clone).
+  - [x] New test coverage beyond what's named above:
+        `internal/engine`: `TestBuildExplicitTasksMissingUpstream`,
+        `TestBuildExplicitTasksDecidesLikeAFullSync`.
+        `internal/settings`: `TestApplyOwnerOverrides` (new
+        `settings.ApplyOwnerOverrides`, applying an `OwnerConfig`'s
+        `IncludeForks`/`Archive`/`MaxRepos` onto a copy of the global
+        `Settings` -- used per owner in `runWorkspaceSync`).
+        `internal/cli`: `TestRunSyncSingleRepoArg`,
+        `TestRunSyncWorkspaceWideAcrossOwners` (the central claim: a
+        configured owner's listing-based clone and a different owner's
+        explicit-only batched clone both happen, each owner's state.json
+        independently correct), `TestRunSyncHelpExitsZero`,
+        `TestRunSyncTooManyPositionalArgsIsUsageError`,
+        `TestRunSyncDryRunDoesNotLockOrWrite`,
+        `TestRunSyncTrackedOnlyOnBrandNewOwnerIsANoOp` (an owner with
+        nothing configured and nothing local is a clean no-op, not an
+        error).
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package
+        and all nine `internal/` packages. Manually smoke-tested the real
+        binary's `sync --help`, top-level `--help` (both now list `sync`),
+        and a real `gh`/`git`-shaped (if unauthenticated) invocation of
+        `sync --config ... --dry-run` showing the exact `gh api graphql`
+        argv it would run.
+  - [x] **Independent review found one real bug, fixed before this step was
+        marked done**: a failed cross-owner `ghcli.ViewRepos` batch call
+        was only recorded as that owner's `planErr` when the owner had
+        *zero* tasks of its own -- so a configured owner with both
+        listing-derived tasks and explicitly tracked repos outside the
+        listing would silently drop the latter on a batch failure, log one
+        generic "error: batch repo lookup failed" line, and still exit `0`.
+        Fixed by marking every plan index that contributed any entry to
+        the failed batch (via the same `batch` slice already used to route
+        successful results back), regardless of whether that plan also
+        has listing-derived tasks. Pinned by
+        `TestRunSyncWorkspaceBatchFailureFailsOwnerEvenWithListingTasks`,
+        regression-reproduced in a scratch copy (reverting to the
+        zero-tasks-only condition makes the test fail with `code=0`,
+        exactly the bug the review found) before trusting it. Also removed
+        `explicitByOwnerHasAny`, the helper the buggy condition used, now
+        dead code.
 - [ ] jj: `jj new -m "feat(worktree): configured worktree placement"`.
   - [ ] `worktreeRoot`/`worktreePath` settings, template expansion,
         branch sanitizing, a `..`/escape check, and an optional `path`

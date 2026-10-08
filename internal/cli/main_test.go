@@ -20,7 +20,7 @@ func TestConfigVerboseAliases(t *testing.T) {
 
 	for _, flag := range []string{"-v", "--verbose"} {
 		t.Run(flag, func(t *testing.T) {
-			cfg, err := resolveConfig([]string{flag, "myorg"}, os.Stderr)
+			cfg, _, err := resolveConfig([]string{flag, "myorg"}, os.Stderr)
 			if err != nil {
 				t.Fatalf("resolveConfig: %v", err)
 			}
@@ -35,7 +35,7 @@ func TestConfigDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
-	cfg, err := resolveConfig([]string{"myorg"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (a) file beats default: concurrency, protocol, maxRepos come from file.
-	cfg, err := resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestConfigPrecedence(t *testing.T) {
 	// (b) env beats file: override concurrency and protocol via env.
 	t.Setenv("GH_ORG_CLONE_CONCURRENCY", "6")
 	t.Setenv("GH_ORG_CLONE_PROTOCOL", "ssh")
-	cfg, err = resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
+	cfg, _, err = resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (c) explicit flag beats env.
-	cfg, err = resolveConfig([]string{"--config", configPath, "--concurrency", "9", "myorg"}, os.Stderr)
+	cfg, _, err = resolveConfig([]string{"--config", configPath, "--concurrency", "9", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (d) a flag not passed must not clobber the file's value (the fs.Visit regression).
-	cfg, err = resolveConfig([]string{"--config", configPath, "--include-forks", "myorg"}, os.Stderr)
+	cfg, _, err = resolveConfig([]string{"--config", configPath, "--include-forks", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestConfigRejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := resolveConfig(tc.args, os.Stderr); err == nil {
+			if _, _, err := resolveConfig(tc.args, os.Stderr); err == nil {
 				t.Fatalf("expected an error, got none")
 			}
 		})
@@ -181,7 +181,7 @@ func TestConfigExpandsHomeInRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	cfg, err := resolveConfig([]string{"--root", "~/src/.workspace", "myorg"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"--root", "~/src/.workspace", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestConfigExpandsHomeInRootFromConfigFile(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte(`{"root": "~/from-file"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestConfigAcceptsValidOwnersAndRepos(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr); err != nil {
+	if _, _, err := resolveConfig([]string{"--config", configFile, "myorg"}, os.Stderr); err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
 }
@@ -644,7 +644,7 @@ func TestConfigFlagsAfterOrg(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("HOME", t.TempDir())
 
-	cfg, err := resolveConfig([]string{"myorg", "--dry-run", "--concurrency", "3"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"myorg", "--dry-run", "--concurrency", "3"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}

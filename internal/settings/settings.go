@@ -34,6 +34,10 @@ type Settings struct {
 	DryRun       bool
 	Verbose      bool
 	Yes          bool // skip the archive-with-live-worktrees confirmation prompt
+	// TrackedOnly, like Force, is sync-only and has no env var or config
+	// key -- it's a per-invocation choice about this run's shape, not a
+	// persistent setting. See AIDEV.md's "sync --tracked-only."
+	TrackedOnly bool
 }
 
 // Default returns every setting at its built-in default, before any
@@ -134,6 +138,26 @@ func ExpandHome(path string) (string, error) {
 		return "", fmt.Errorf("expanding ~/: %w", err)
 	}
 	return filepath.Join(home, path[2:]), nil
+}
+
+// ApplyOwnerOverrides returns a copy of base with IncludeForks, Archive,
+// and MaxRepos replaced by oc's own values wherever oc sets them (its
+// pointer fields are non-nil) -- see AIDEV.md: "Per-owner entries can
+// override global defaults." Every other field of base is unchanged;
+// per-owner overrides are deliberately limited to these three, matching
+// the example config and the fields OwnerConfig actually declares.
+func ApplyOwnerOverrides(base Settings, oc OwnerConfig) Settings {
+	out := base
+	if oc.IncludeForks != nil {
+		out.IncludeForks = *oc.IncludeForks
+	}
+	if oc.Archive != nil {
+		out.Archive = *oc.Archive
+	}
+	if oc.MaxRepos != nil {
+		out.MaxRepos = *oc.MaxRepos
+	}
+	return out
 }
 
 func ResolveConfigPath(flagValue string) string {
@@ -420,6 +444,11 @@ var settingsTable = []Setting{
 		flagName: "force", kind: kindBool, usage: "ignore stored pushedAt and re-sync every repo",
 		commands: inCmd(CmdSync, CmdClone),
 		apply:    func(s *Settings, v any) { s.Force = v.(bool) },
+	},
+	{
+		flagName: "tracked-only", kind: kindBool, usage: "skip owner listings; refresh only repos already present locally or in state",
+		commands: inCmd(CmdSync),
+		apply:    func(s *Settings, v any) { s.TrackedOnly = v.(bool) },
 	},
 	{
 		flagName: "dry-run", kind: kindBool, usage: "print the planned actions without doing them",

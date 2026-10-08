@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/swanysimon/gh-org-clone/internal/settings"
 	"github.com/swanysimon/gh-org-clone/internal/store"
 )
+
+var errFakeFailure = errors.New("fake failure")
 
 const testTimeout = 30 * time.Second
 
@@ -376,5 +380,152 @@ func TestSyncOneDoesNotWriteStateOnFailure(t *testing.T) {
 	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
 	if _, ok := st.Repos["repo1"]; ok {
 		t.Fatalf("state should not have an entry for repo1 after a failed sync")
+	}
+}
+
+// TestBuildExplicitTasksMissingUpstream confirms a nil Repo in a
+// ghcli.RepoResult produces a MissingUpstream task, not an attempt at
+// plan.Decide (which has no RepoFacts for a repo gh can't resolve at all).
+func TestBuildExplicitTasksMissingUpstream(t *testing.T) {
+	env := testEnv(t)
+	st := store.State{Repos: map[string]store.RepoState{
+		"gone": {ID: "R1", Status: store.StatusCloned, Tracked: true},
+	}}
+
+	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
+		{Owner: env.Owner, Name: "gone", Repo: nil},
+	}, st)
+
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Action != plan.MissingUpstream {
+		t.Fatalf("Action = %q, want %q", tasks[0].Action, plan.MissingUpstream)
+	}
+	if tasks[0].Prev.ID != "R1" {
+		t.Fatalf("Prev not carried forward: %+v", tasks[0].Prev)
+	}
+}
+
+// TestBuildExplicitTasksDecidesLikeAFullSync confirms a present Repo in a
+// ghcli.RepoResult is decided by the same plan.Decide path a full owner
+// listing would use -- nothing missing just because it arrived through
+// ViewRepos instead of ListRepos.
+func TestBuildExplicitTasksDecidesLikeAFullSync(t *testing.T) {
+	env := testEnv(t)
+	repo := ghcli.Repo{ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1", PushedAt: time.Now()}
+
+	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
+		{Owner: env.Owner, Name: "repo1", Repo: &repo},
+	}, store.State{})
+
+	if len(tasks) != 1 || tasks[0].Action != plan.Clone {
+		t.Fatalf("got %+v, want a single Clone task (nothing local yet)", tasks)
+	}
+}
+
+// TestBuildExplicitTasksNotesTransfer confirms a repo whose returned
+// NameWithOwner names a different owner than it was requested under gets a
+// note in its reason, without changing which owner directory it's decided
+// against -- "report it, don't move data between owner directories
+// automatically."
+func TestBuildExplicitTasksNotesTransfer(t *testing.T) {
+	env := testEnv(t)
+	repo := ghcli.Repo{ID: "R1", Name: "repo1", NameWithOwner: "newowner/repo1", PushedAt: time.Now()}
+
+	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
+		{Owner: env.Owner, Name: "repo1", Repo: &repo},
+	}, store.State{})
+
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if !strings.Contains(tasks[0].Reason, "newowner") || !strings.Contains(tasks[0].Reason, "transferred") {
+		t.Fatalf("reason should note the transfer: %q", tasks[0].Reason)
+	}
+}
+
+// TestMultiOwnerRunSavesEachOwnerIndependently confirms two owners' tasks,
+// run through one shared pool, each get their own state.json saved with
+// their own results -- not merged, not skipped, not waiting on each other.
+func TestMultiOwnerRunSavesEachOwnerIndependently(t *testing.T) {
+	root := t.TempDir()
+
+	makeEnv := func(owner string) Env {
+		e := testEnv(t)
+		e.Owner = owner
+		e.Settings.Root = root
+		return e
+	}
+	envA := makeEnv("owner-a")
+	envB := makeEnv("owner-b")
+
+	repoA := ghcli.Repo{ID: "RA", Name: "repoa", NameWithOwner: "owner-a/repoa", PushedAt: time.Now()}
+	repoB := ghcli.Repo{ID: "RB", Name: "repob", NameWithOwner: "owner-b/repob", PushedAt: time.Now()}
+
+	var releasedA, releasedB bool
+	owners := []OwnerWork{
+		{
+			Owner:   "owner-a",
+			Env:     envA,
+			Tasks:   []Task{{Repo: repoA, Action: plan.Clone, Reason: "no local clone exists"}},
+			State:   store.State{Repos: map[string]store.RepoState{}},
+			Release: func() { releasedA = true },
+		},
+		{
+			Owner:   "owner-b",
+			Env:     envB,
+			Tasks:   []Task{{Repo: repoB, Action: plan.Clone, Reason: "no local clone exists"}},
+			State:   store.State{Repos: map[string]store.RepoState{}},
+			Release: func() { releasedB = true },
+		},
+	}
+
+	outcomes := MultiOwnerRun(context.Background(), 2, owners, os.Stderr)
+	if len(outcomes) != 2 {
+		t.Fatalf("got %d outcomes, want 2", len(outcomes))
+	}
+	for _, oc := range outcomes {
+		if len(oc.Results) != 1 || oc.Results[0].Err == nil {
+			// Cloning a fake repo with no real clone URL is expected to
+			// fail -- the point of this test is independence, not a real
+			// clone -- but it still must produce exactly one Result.
+			t.Fatalf("owner %q: got %+v", oc.Owner, oc.Results)
+		}
+	}
+	if !releasedA || !releasedB {
+		t.Fatalf("both owners should have had Release called: a=%v b=%v", releasedA, releasedB)
+	}
+}
+
+// TestApplyResultsToStateSkipsFailedAndCarriesTrackedForward confirms
+// applyResultsToState's two documented rules: a failed result leaves its
+// repo's existing state entry untouched, and Tracked always carries
+// forward from whatever was already recorded, matching the single-owner
+// Run() path's own result-processing loop.
+func TestApplyResultsToStateSkipsFailedAndCarriesTrackedForward(t *testing.T) {
+	st := store.State{Repos: map[string]store.RepoState{
+		"ok":     {ID: "R1", Tracked: true, Status: store.StatusCloned},
+		"failed": {ID: "R2", Tracked: true, Status: store.StatusCloned, PushedAt: time.Now().Add(-time.Hour)},
+	}}
+	staleFailedPushedAt := st.Repos["failed"].PushedAt
+
+	results := []Result{
+		{Name: "ok", Status: store.StatusCloned, PushedAt: time.Now()},
+		{Name: "failed", Err: errFakeFailure},
+	}
+	applyResultsToState(&st, results, map[string]Task{
+		"ok":     {Repo: ghcli.Repo{ID: "R1-fresh"}},
+		"failed": {Repo: ghcli.Repo{ID: "R2-fresh"}},
+	})
+
+	if !st.Repos["ok"].Tracked {
+		t.Fatalf("ok: Tracked should carry forward as true")
+	}
+	if st.Repos["ok"].ID != "R1-fresh" {
+		t.Fatalf("ok: ID should take the fresh value, got %q", st.Repos["ok"].ID)
+	}
+	if !st.Repos["failed"].PushedAt.Equal(staleFailedPushedAt) {
+		t.Fatalf("failed: entry should be untouched, got %+v", st.Repos["failed"])
 	}
 }

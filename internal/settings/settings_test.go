@@ -80,7 +80,7 @@ func TestSettingsTableConfigKeysMatchFileConfig(t *testing.T) {
 // on: which commands accept which settings, matching the sync/worktree
 // surface documented in AIDEV.md and the README.
 func TestSettingsFor(t *testing.T) {
-	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes"}
+	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes", "tracked-only"}
 	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
 
@@ -279,4 +279,28 @@ func TestExpandHome(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyOwnerOverrides(t *testing.T) {
+	base := Settings{IncludeForks: false, Archive: true, MaxRepos: 10000, Root: "/unrelated"}
+
+	t.Run("no overrides set leaves base unchanged", func(t *testing.T) {
+		got := ApplyOwnerOverrides(base, OwnerConfig{Name: "x"})
+		if got != base {
+			t.Errorf("got %+v, want unchanged %+v", got, base)
+		}
+	})
+
+	t.Run("each override field replaces its matching Settings field", func(t *testing.T) {
+		includeForks := true
+		archive := false
+		maxRepos := 5
+		got := ApplyOwnerOverrides(base, OwnerConfig{Name: "x", IncludeForks: &includeForks, Archive: &archive, MaxRepos: &maxRepos})
+		if got.IncludeForks != true || got.Archive != false || got.MaxRepos != 5 {
+			t.Errorf("got %+v, want overrides applied", got)
+		}
+		if got.Root != base.Root {
+			t.Errorf("Root should be untouched: got %q", got.Root)
+		}
+	})
 }

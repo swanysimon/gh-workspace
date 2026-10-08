@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -141,5 +142,141 @@ func TestCloneURL(t *testing.T) {
 	}
 	if got := CloneURL(repo, "https"); got != repo.URL {
 		t.Fatalf("https protocol: got %q, want %q", got, repo.URL)
+	}
+}
+
+func TestViewReposArgsAndQueryShape(t *testing.T) {
+	var gotArgs []string
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gotArgs = args
+		return []byte(`{"data":{"r0":{"id":"R1","name":"repo1","nameWithOwner":"myorg/repo1"},"r1":{"id":"R2","name":"repo2","nameWithOwner":"other/repo2"}}}`), nil
+	}
+
+	results, err := ViewRepos(context.Background(), fake, []OwnerRepo{
+		{Owner: "myorg", Name: "repo1"},
+		{Owner: "other", Name: "repo2"},
+	})
+	if err != nil {
+		t.Fatalf("ViewRepos: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].Repo == nil || results[0].Repo.ID != "R1" {
+		t.Fatalf("results[0] = %+v", results[0])
+	}
+	if results[1].Repo == nil || results[1].Repo.ID != "R2" {
+		t.Fatalf("results[1] = %+v", results[1])
+	}
+
+	if gotArgs[0] != "api" || gotArgs[1] != "graphql" || gotArgs[2] != "-f" {
+		t.Fatalf("unexpected argv: %v", gotArgs)
+	}
+	query := strings.TrimPrefix(gotArgs[3], "query=")
+	for _, want := range []string{
+		`r0: repository(owner: "myorg", name: "repo1")`,
+		`r1: repository(owner: "other", name: "repo2")`,
+		"nameWithOwner", "defaultBranchRef { name }",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+}
+
+func TestViewReposNullEntryIsMissingNotError(t *testing.T) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return []byte(`{"data":{"r0":{"id":"R1","name":"repo1","nameWithOwner":"myorg/repo1"},"r1":null},"errors":[{"message":"Could not resolve to a Repository"}]}`), nil
+	}
+
+	results, err := ViewRepos(context.Background(), fake, []OwnerRepo{
+		{Owner: "myorg", Name: "repo1"},
+		{Owner: "myorg", Name: "gone"},
+	})
+	if err != nil {
+		t.Fatalf("ViewRepos: %v", err)
+	}
+	if results[0].Repo == nil {
+		t.Fatalf("results[0].Repo should be present")
+	}
+	if results[1].Repo != nil {
+		t.Fatalf("results[1].Repo should be nil (missing upstream), got %+v", results[1].Repo)
+	}
+	if results[1].Owner != "myorg" || results[1].Name != "gone" {
+		t.Fatalf("results[1] should still identify the requested repo: %+v", results[1])
+	}
+}
+
+func TestViewReposNonZeroExitWithPartialDataStillParses(t *testing.T) {
+	// Mirrors the documented, unverified-against-the-real-API edge case:
+	// gh exits non-zero but still printed a usable partial response.
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return []byte(`{"data":{"r0":null},"errors":[{"message":"Could not resolve to a Repository"}]}`),
+			errors.New("gh api graphql: exit status 1: GraphQL: Could not resolve to a Repository")
+	}
+	results, err := ViewRepos(context.Background(), fake, []OwnerRepo{{Owner: "myorg", Name: "gone"}})
+	if err != nil {
+		t.Fatalf("ViewRepos: %v", err)
+	}
+	if results[0].Repo != nil {
+		t.Fatalf("results[0].Repo should be nil, got %+v", results[0].Repo)
+	}
+}
+
+func TestViewReposNoUsableDataIsAnError(t *testing.T) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return []byte(`{"message":"Bad credentials"}`), errors.New("gh api graphql: exit status 1: HTTP 401: Bad credentials")
+	}
+	if _, err := ViewRepos(context.Background(), fake, []OwnerRepo{{Owner: "myorg", Name: "repo1"}}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestViewReposEmptyResponseIsAnError(t *testing.T) {
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return nil, errors.New("gh api graphql: exit status 1: network error")
+	}
+	if _, err := ViewRepos(context.Background(), fake, []OwnerRepo{{Owner: "myorg", Name: "repo1"}}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestViewReposBatchesAtGraphQLBatchSize(t *testing.T) {
+	var calls int
+	var batchSizes []int
+	fake := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		calls++
+		query := args[3]
+		n := strings.Count(query, "repository(owner:")
+		batchSizes = append(batchSizes, n)
+
+		b := strings.Builder{}
+		b.WriteString("{\"data\":{")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, "\"r%d\":{\"id\":\"R%d\"}", i, i)
+		}
+		b.WriteString("}}")
+		return []byte(b.String()), nil
+	}
+
+	repos := make([]OwnerRepo, 150)
+	for i := range repos {
+		repos[i] = OwnerRepo{Owner: "myorg", Name: fmt.Sprintf("repo%d", i)}
+	}
+	results, err := ViewRepos(context.Background(), fake, repos)
+	if err != nil {
+		t.Fatalf("ViewRepos: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("got %d gh calls, want 2 (150 repos at batch size 100)", calls)
+	}
+	if len(batchSizes) != 2 || batchSizes[0] != 100 || batchSizes[1] != 50 {
+		t.Fatalf("batch sizes = %v, want [100 50]", batchSizes)
+	}
+	if len(results) != 150 {
+		t.Fatalf("got %d results, want 150", len(results))
 	}
 }

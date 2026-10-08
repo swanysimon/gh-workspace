@@ -48,6 +48,7 @@ func TestPinTopLevelHelp(t *testing.T) {
 	want := "Clone and keep local mirrors of every repository in a GitHub org.\n\n" +
 		"USAGE\n" +
 		"  gh org-clone [flags] <org>\n" +
+		"  gh org-clone sync [flags] [<org>[/<repo>]]\n" +
 		"  gh org-clone clone [flags] <org>/<repo>...\n" +
 		"  gh org-clone untrack [flags] <org>/<repo>\n" +
 		"  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>\n" +
@@ -63,6 +64,7 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"      --include-forks      include forked repos\n" +
 		"      --archive            tarball archived repos and remove their clones\n" +
 		"      --force              ignore stored pushedAt and re-sync every repo\n" +
+		"      --tracked-only       skip owner listings; refresh only repos already present locally or in state\n" +
 		"      --dry-run            print the planned actions without doing them\n" +
 		"  -v, --verbose            verbose output\n" +
 		"      --yes                don't prompt before removing worktrees to archive a repo they belong to\n" +
@@ -294,7 +296,7 @@ func TestPinDashDashEndsFlagParsing(t *testing.T) {
 func TestPinExplicitBoolFlagFalse(t *testing.T) {
 	homeFor(t)
 
-	cfg, err := resolveConfig([]string{"--archive=false", "myorg"}, os.Stderr)
+	cfg, _, err := resolveConfig([]string{"--archive=false", "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}
@@ -303,7 +305,7 @@ func TestPinExplicitBoolFlagFalse(t *testing.T) {
 	}
 
 	// And the default (flag absent) is still true.
-	cfg, err = resolveConfig([]string{"myorg"}, os.Stderr)
+	cfg, _, err = resolveConfig([]string{"myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
 	}

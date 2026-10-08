@@ -66,10 +66,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return cmdClone(ctx, args[1:], stdout, stderr)
 		case "untrack":
 			return cmdUntrack(ctx, args[1:], stdout, stderr)
+		case "sync":
+			return runSync(ctx, args[1:], stdout, stderr)
 		}
 	}
 
-	cfg, err := resolveConfig(args, stderr)
+	cfg, fc, err := resolveConfig(args, stderr)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -78,6 +80,19 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	if cfg.TrackedOnly {
+		return runWorkspaceSync(ctx, cfg, fc, []string{cfg.Owner}, stdout, stderr)
+	}
+	return runSingleOwnerSync(ctx, cfg, stdout, stderr)
+}
+
+// runSingleOwnerSync is the full-listing sync of one owner -- today's bare
+// "gh org-clone <org>" and (as of the sync subcommand's introduction) its
+// equivalent explicit form, "gh org-clone sync <org>". Extracted out of
+// Run() so both entry points share one implementation instead of two
+// copies that could drift -- see AIDEV.md "Bare gh workspace <owner> stays
+// as an undocumented alias for sync <owner>."
+func runSingleOwnerSync(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 	if _, err := exec.LookPath("gh"); err != nil {
 		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
@@ -296,6 +311,7 @@ func usageFlags(d config) []flagHelp {
 		{long: "include-forks", usage: "include forked repos"},
 		{long: "archive", usage: "tarball archived repos and remove their clones"},
 		{long: "force", usage: "ignore stored pushedAt and re-sync every repo"},
+		{long: "tracked-only", usage: "skip owner listings; refresh only repos already present locally or in state"},
 		{long: "dry-run", usage: "print the planned actions without doing them"},
 		{long: "verbose", shorthand: "v", usage: "verbose output"},
 		{long: "yes", usage: "don't prompt before removing worktrees to archive a repo they belong to"},
@@ -308,6 +324,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "USAGE")
 	fmt.Fprintln(w, "  gh org-clone [flags] <org>")
+	fmt.Fprintln(w, "  gh org-clone sync [flags] [<org>[/<repo>]]")
 	fmt.Fprintln(w, "  gh org-clone clone [flags] <org>/<repo>...")
 	fmt.Fprintln(w, "  gh org-clone untrack [flags] <org>/<repo>")
 	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>")
@@ -401,7 +418,7 @@ func newFlagSet(name string) (*pflag.FlagSet, *bool) {
 // accepted: pflag treats a single dash followed by more than one character
 // as a cluster of shorthand flags, not a long flag. This is a deliberate,
 // intentional difference -- see AIDEV.md.
-func resolveConfig(args []string, stderr io.Writer) (config, error) {
+func resolveConfig(args []string, stderr io.Writer) (config, *fileConfig, error) {
 	var configPath string
 	fs, help := newFlagSet("gh-org-clone")
 	bound := bindSettings(fs, cmdSync)
@@ -417,38 +434,38 @@ func resolveConfig(args []string, stderr io.Writer) (config, error) {
 	// preserved bugs -- see AIDEV.md.
 	if err := fs.Parse(args); err != nil {
 		printUsage(stderr)
-		return config{}, err
+		return config{}, nil, err
 	}
 	if *help {
 		printUsage(stderr)
-		return config{}, errHelpRequested
+		return config{}, nil, errHelpRequested
 	}
 
 	positional := fs.Args()
 	if len(positional) != 1 {
 		printUsage(stderr)
-		return config{}, fmt.Errorf("expected exactly one org argument, got %d", len(positional))
+		return config{}, nil, fmt.Errorf("expected exactly one org argument, got %d", len(positional))
 	}
 
 	cfg := defaultConfig()
 
 	fc, err := loadFileConfig(resolveConfigPath(configPath))
 	if err != nil {
-		return config{}, err
+		return config{}, nil, err
 	}
 	if err := resolveSettings(&cfg, cmdSync, fs, bound, fc); err != nil {
-		return config{}, err
+		return config{}, nil, err
 	}
 	if err := expandConfigPaths(&cfg); err != nil {
-		return config{}, err
+		return config{}, nil, err
 	}
 
 	cfg.Owner = positional[0]
 
 	if err := validateConfig(cfg); err != nil {
-		return config{}, err
+		return config{}, nil, err
 	}
-	return cfg, nil
+	return cfg, fc, nil
 }
 
 // resolveConfigPath is a thin shim over settings.ResolveConfigPath.

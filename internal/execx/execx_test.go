@@ -33,6 +33,16 @@ func TestRunErrorIncludesStderr(t *testing.T) {
 	}
 }
 
+func TestRunPreservesStdoutOnError(t *testing.T) {
+	out, err := Run(context.Background(), "", "sh", "-c", "echo partial-output; exit 3")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := strings.TrimSpace(string(out)); got != "partial-output" {
+		t.Fatalf("stdout = %q, want %q even though the command exited non-zero", got, "partial-output")
+	}
+}
+
 func TestRunUsesDir(t *testing.T) {
 	out, err := Run(context.Background(), "/", "pwd")
 	if err != nil {
