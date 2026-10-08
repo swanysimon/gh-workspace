@@ -1365,22 +1365,144 @@ Each bullet group is its own jj change.
         exactly the bug the review found) before trusting it. Also removed
         `explicitByOwnerHasAny`, the helper the buggy condition used, now
         dead code.
-- [ ] jj: `jj new -m "feat(worktree): configured worktree placement"`.
-  - [ ] `worktreeRoot`/`worktreePath` settings, template expansion,
-        branch sanitizing, a `..`/escape check, and an optional `path`
-        argument.
-  - [ ] Defaults: current directory + `{repo}`. Tests: run from a temp
-        directory with no config (the worktree lands at `<cwd>/<repo>`,
-        with no owner in the path), a second branch of the same repo in the
-        same directory (fails with the explicit-path/`{branch}` hint, no
-        renaming), a configured template with `{branch}` and a `/` in the
-        branch name, a relative `worktreeRoot` in config (rejected), and an
-        explicit path outside `worktreeRoot` (allowed).
-  - [ ] `worktree remove <path>` (path-only form) and a workspace-wide
-        `worktree list`.
-- [ ] Tests for all of the above, plus a no-op cost test: fake exec
-      asserts a no-op `sync` makes exactly one `gh` call per configured
-      owner plus one per batch of explicit repos, and **zero** git calls.
+- [x] jj: `jj new -m "feat(worktree): configured worktree placement"`.
+  - [x] `settings.Settings` gained `WorktreeRoot`/`WorktreePath`.
+        `WorktreeRoot`'s default is `""`, meaning "the current directory
+        when the command runs" -- a dynamic default `settings.Default()`
+        itself cannot express (it has no notion of "the directory the
+        command happens to run in"), resolved instead by
+        `resolveWorktreePath` (new, `internal/cli/worktreepath.go`) only
+        when actually needed. `WorktreePath`'s default is the plain static
+        string `"{repo}"`, so it lives in `Default()` like every other
+        setting. `settings.Validate` requires `WorktreeRoot` to be
+        absolute only when it's actually set (`""` is always valid) and
+        requires `WorktreePath` to be non-empty. Both flags/env/config
+        keys (`--worktree-root`/`--worktree-path`,
+        `GH_ORG_CLONE_WORKTREE_ROOT`/`GH_ORG_CLONE_WORKTREE_PATH`,
+        `worktreeRoot`/`worktreePath`) are scoped to a **new, narrower**
+        `settings.CmdWorktreeAdd` commandID, not the existing shared
+        `CmdWorktree` (which `worktree remove`/`worktree list` also use):
+        remove/list have no use for a default-path template at all, so
+        giving them these two flags anyway (which sharing `CmdWorktree`
+        would have done) would have been actively misleading. `root`/
+        `timeout`/`protocol` are still shared across all three via
+        `inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd)`.
+        `cmdWorktreeAdd` (the dispatch function) now resolves against
+        `cmdIDWorktreeAdd` (not `cmdWorktree`) -- named with the same
+        `cmdID`-prefix workaround as `cmdIDClone`, to avoid colliding with
+        its own dispatch function's name.
+  - [x] Template expansion (`expandWorktreePathTemplate`): `{owner}`,
+        `{repo}`, `{branch}` substituted by plain string replacement.
+        `{branch}` has every `/` replaced with `-` *before* substitution
+        (`resolveWorktreePath`), so a branch like `feat/x` can't create
+        extra path levels a template didn't ask for. The joined, cleaned
+        result is checked to stay under `worktreeRoot` (`strings.HasPrefix`
+        after `filepath.Clean`/`filepath.Join`); an escaping template
+        (e.g. `../{repo}`) is a hard error, never silently clamped.
+  - [x] `path` is now optional on `worktree add` (`<org>/<repo> <branch>
+        [path]`, 2 or 3 positionals instead of exactly 3) -- a genuine,
+        deliberate user-facing change, reflected in the top-level
+        `--help` USAGE block and every pinned test that printed the old
+        `<path>`-required usage string. An explicit `path` argument still
+        resolves exactly as before (`absWorktreePath`, against the
+        caller's cwd, no under-`worktreeRoot` check at all) -- "the user
+        always specifies where a worktree lives" (AGENTS.md): where the
+        command runs, a configured template, or an explicit path are all
+        the user choosing. A *computed* path that already exists gets a
+        dedicated error naming the fix (an explicit path, or a
+        `--worktree-path` template that includes `{branch}`) instead of
+        git's own generic failure text; an *explicit* path hitting the
+        same git error is left exactly as before -- never a generated
+        alternative name, never a silent rename.
+  - [x] Defaults confirmed end to end, not just at the unit level: current
+        directory + `{repo}`, no owner segment
+        (`TestWorktreeAddDefaultsToCurrentDirectoryAndRepoName`,
+        `TestResolveWorktreePathDefaultsToCurrentDirectoryAndRepoName`),
+        plus a **manual smoke test of the real binary** (fake `gh` on
+        `PATH`, real `git`) confirming the exact same default placement
+        outside of the test harness entirely.
+        Second branch, same computed path, explicit-path/`{branch}` hint,
+        no renaming
+        (`TestWorktreeAddSecondBranchSamePathFailsWithHint`).
+        Configured template with `{branch}` and a `/` in the branch name
+        (`TestWorktreeAddConfiguredTemplateWithBranchSlash`,
+        `TestResolveWorktreePathBranchSlashSanitized`).
+        A relative `--worktree-root` is rejected
+        (`TestWorktreeAddRejectsRelativeWorktreeRoot`); and an explicit
+        path outside `worktreeRoot` is allowed
+        (`TestWorktreeAddExplicitPathOutsideWorktreeRootAllowed`).
+        An escaping template is rejected
+        (`TestResolveWorktreePathRejectsEscapingTemplate`).
+        A configured template with `{owner}` works too
+        (`TestResolveWorktreePathConfiguredTemplateWithOwner`).
+  - [x] `worktree remove <path>` (path-only form, new
+        `resolveWorktreeOwnerRepo`): follows the worktree's own `.git`
+        file (a plain text file naming
+        `<gitdir>: <central-clone>/.git/worktrees/<name>` -- not a
+        directory, the way a repository's own clone's `.git` is) back to
+        the central clone, and recovers owner/repo by checking that
+        directory sits at `<root>/<owner>/repos/<repo>`.
+        **Found and fixed a real cross-platform bug while testing this**:
+        on macOS, `t.TempDir()` (and any real invocation under `/tmp` or
+        `/var`) returns an unresolved symlink path (`/var/folders/...`),
+        but git resolves symlinks when it writes a worktree's gitdir
+        (`/private/var/folders/...`), so comparing `cfg.Root` against the
+        gitdir-derived path verbatim spuriously rejected every real
+        worktree. Fixed by resolving `cfg.Root` through
+        `filepath.EvalSymlinks` before comparing (falling back to the
+        unresolved value if that fails, e.g. the root doesn't exist yet,
+        rather than erroring out of what should be a plain lookup) --
+        this is not a test-only workaround; the same mismatch would occur
+        for any real root under a symlinked ancestor directory, which is
+        the normal case on macOS. Caught immediately by
+        `TestWorktreeRemovePathOnlyFormFindsOwningRepo` failing before the
+        fix and passing after.
+        Also added `TestWorktreeRemovePathOnlyRejectsNonWorktreePath` and
+        `TestWorktreeRemovePathOnlyRejectsRepoCloneItself` (the central
+        clone itself, whose `.git` is a directory, not a worktree's `.git`
+        file).
+  - [x] Workspace-wide `worktree list` (no positional at all): enumerates
+        every directory under `cfg.Root` and lists each one's worktrees,
+        with each repo's header qualified `<owner>/<repo>:` instead of the
+        existing (unchanged) `<repo>:` the single-owner form still prints
+        -- avoids ambiguity across owners without changing either
+        existing form's output. An owner directory with no `repos/` at
+        all (nothing ever cloned under it) is not an error for this form
+        specifically, since it's a legitimate state the whole-workspace
+        enumeration can run into on its own, unlike `worktree list <org>`
+        naming a real, specific owner.
+        `TestWorktreeListWorkspaceWideNoArg`,
+        `TestWorktreeListWorkspaceWideSkipsOwnersWithNothingCloned`.
+  - [x] No-op cost test:
+        `TestRunSyncWorkspaceNoOpCostsExactlyOneGhCallPerOwnerOrBatch` --
+        two configured owners plus one explicit repo outside them, run
+        twice; the second (no-op) run must cost exactly 3 `gh` calls (one
+        listing per owner, one batched lookup for the explicit repo) and
+        zero `git` calls. Regression-reproduced in a scratch copy (forcing
+        `BuildTasks`' `plan.Decide` call to `Force: true` made the test
+        fail with 8 real `git` calls instead of 0) before trusting it --
+        and in the process of writing that reproduction, first
+        mis-identified `SyncOne`'s own `Force` parameter as the one to
+        break (same literal text, different function, three occurrences
+        in the file); corrected once the test kept passing against the
+        wrong edit, which was itself a useful (if accidental) confirmation
+        that `SyncOne` and `BuildTasks` are genuinely independent code
+        paths, not aliases of each other.
+  - [x] **Independent review found one real (if minor) issue, fixed before
+        this step was marked done**: the "path already exists" hint
+        message always suggested a `--worktree-path` template that
+        includes `{branch}` -- but a template that *already* includes
+        `{branch}` can still collide, because `/` in a branch name is
+        replaced with `-` before substitution (`feat/x` and `feat-x`
+        sanitize to the same string). The old message was actively
+        misleading in exactly that case. Reworded to explain the real
+        cause (the slash-to-dash sanitization) instead of repeating advice
+        that wouldn't have helped. Not a correctness bug -- reviewer
+        confirmed the collision fails safely with no overwrite/corruption,
+        no worse than git's own pre-existing "path already exists"
+        handling -- just an inaccurate error message.
+        `go build`/`vet`/`gofmt`/`test -race` clean on the root package
+        and all nine `internal/` packages.
 
 ## Phase 4 — Rename the surface
 

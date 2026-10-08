@@ -327,9 +327,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  gh org-clone sync [flags] [<org>[/<repo>]]")
 	fmt.Fprintln(w, "  gh org-clone clone [flags] <org>/<repo>...")
 	fmt.Fprintln(w, "  gh org-clone untrack [flags] <org>/<repo>")
-	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree list [flags] <org>/<repo>|<org>")
+	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]")
+	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
+	fmt.Fprintln(w, "  gh org-clone worktree list [flags] [<org>/<repo>|<org>]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run \"gh org-clone worktree <command> --help\" for a worktree command's flags.")
 	fmt.Fprintln(w)
@@ -501,5 +501,15 @@ func expandConfigPaths(cfg *config) error {
 		return err
 	}
 	cfg.Root = expanded
+
+	// "" (the unset default, meaning "the current directory") is left
+	// alone -- only an explicitly set WorktreeRoot gets expanded.
+	if cfg.WorktreeRoot != "" {
+		expanded, err := settings.ExpandHome(cfg.WorktreeRoot)
+		if err != nil {
+			return err
+		}
+		cfg.WorktreeRoot = expanded
+	}
 	return nil
 }

@@ -51,9 +51,9 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"  gh org-clone sync [flags] [<org>[/<repo>]]\n" +
 		"  gh org-clone clone [flags] <org>/<repo>...\n" +
 		"  gh org-clone untrack [flags] <org>/<repo>\n" +
-		"  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>\n" +
-		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>\n" +
-		"  gh org-clone worktree list [flags] <org>/<repo>|<org>\n\n" +
+		"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n" +
+		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
+		"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n\n" +
 		"Run \"gh org-clone worktree <command> --help\" for a worktree command's flags.\n\n" +
 		"FLAGS\n" +
 		"      --root string        root directory for cloned orgs (default \"" + root + "\")\n" +
@@ -84,17 +84,19 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 		{
 			args: []string{"worktree", "add", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>\n\n" +
+				"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n\n" +
 				"FLAGS\n" +
-				"      --config string      path to a JSON config file\n" +
-				"      --protocol string    clone protocol: ssh or https (default \"ssh\")\n" +
-				"      --root string        root directory for cloned orgs (default \"" + root + "\")\n" +
-				"      --timeout duration   per-subprocess timeout (default 30m0s)\n",
+				"      --config string          path to a JSON config file\n" +
+				"      --protocol string        clone protocol: ssh or https (default \"ssh\")\n" +
+				"      --root string            root directory for cloned orgs (default \"" + root + "\")\n" +
+				"      --timeout duration       per-subprocess timeout (default 30m0s)\n" +
+				"      --worktree-path string   worktree path template under worktree-root ({owner}, {repo}, {branch})\n" +
+				"      --worktree-root string   root directory new worktrees are placed under (default: the current directory)\n",
 		},
 		{
 			args: []string{"worktree", "remove", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>\n\n" +
+				"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n\n" +
 				"FLAGS\n" +
 				"      --config string      path to a JSON config file\n" +
 				"      --force              remove even if the worktree has uncommitted changes\n" +
@@ -105,7 +107,7 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 		{
 			args: []string{"worktree", "list", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree list [flags] <org>/<repo>|<org>\n\n" +
+				"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n\n" +
 				"FLAGS\n" +
 				"      --config string      path to a JSON config file\n" +
 				"      --protocol string    clone protocol: ssh or https (default \"ssh\")\n" +
@@ -131,9 +133,9 @@ func TestPinWorktreeUsageOnBadInvocation(t *testing.T) {
 	homeFor(t)
 
 	worktreeUsage := "USAGE\n" +
-		"  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>\n" +
-		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>\n" +
-		"  gh org-clone worktree list [flags] <org>/<repo>|<org>\n"
+		"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n" +
+		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
+		"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n"
 
 	cases := []struct {
 		name string

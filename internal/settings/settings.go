@@ -38,6 +38,16 @@ type Settings struct {
 	// key -- it's a per-invocation choice about this run's shape, not a
 	// persistent setting. See AIDEV.md's "sync --tracked-only."
 	TrackedOnly bool
+	// WorktreeRoot is "" by default, meaning "the current directory when
+	// the command runs" -- a dynamic default resolved by the caller
+	// (cmdWorktreeAdd), not by Default() below, since Default() has no
+	// notion of "the directory the command happens to run in." Validate
+	// only requires it to be absolute when it is actually set; "" is
+	// always valid. WorktreePath's default (unlike WorktreeRoot's) is a
+	// plain static string, "{repo}", so it lives in Default() like every
+	// other setting.
+	WorktreeRoot string
+	WorktreePath string
 }
 
 // Default returns every setting at its built-in default, before any
@@ -51,6 +61,7 @@ func Default() Settings {
 		Protocol:     "ssh",
 		IncludeForks: false,
 		Archive:      true,
+		WorktreePath: "{repo}",
 	}
 }
 
@@ -83,6 +94,16 @@ func Validate(s Settings) error {
 	if !filepath.IsAbs(s.Root) {
 		return fmt.Errorf("root must be an absolute path, got %q", s.Root)
 	}
+	// "" means "the current directory when the command runs," resolved
+	// dynamically by the caller, not here -- only an explicitly set
+	// WorktreeRoot must be absolute. See the Settings struct's own doc
+	// comment on this field.
+	if s.WorktreeRoot != "" && !filepath.IsAbs(s.WorktreeRoot) {
+		return fmt.Errorf("worktree-root must be an absolute path, got %q", s.WorktreeRoot)
+	}
+	if s.WorktreePath == "" {
+		return fmt.Errorf("worktree-path must not be empty")
+	}
 	return nil
 }
 
@@ -102,6 +123,8 @@ type FileConfig struct {
 	Archive      *bool         `json:"archive"`
 	Owners       []OwnerConfig `json:"owners"`
 	Repos        []string      `json:"repos"`
+	WorktreeRoot *string       `json:"worktreeRoot"`
+	WorktreePath *string       `json:"worktreePath"`
 }
 
 // OwnerConfig is one entry in the config file's "owners" list: an owner to
@@ -257,6 +280,13 @@ const (
 	// already needs, but not --concurrency/--max-repos/--include-forks,
 	// which only make sense for a whole owner's listing.
 	CmdClone CommandID = "clone"
+	// CmdWorktreeAdd is "worktree add" specifically, not "worktree"
+	// (remove/list): it needs --worktree-root/--worktree-path (computing a
+	// default path when none is given), which remove and list have no use
+	// for at all. Every setting CmdWorktree itself grants (root, timeout,
+	// protocol) is still available under CmdWorktreeAdd too -- see each of
+	// those settings' own inCmd(...) list.
+	CmdWorktreeAdd CommandID = "worktree-add"
 )
 
 // settingKind selects how a setting's flag is registered on a pflag.FlagSet
@@ -348,7 +378,7 @@ func parseEnvBool(v string) (any, error) {
 var settingsTable = []Setting{
 	{
 		flagName: "root", kind: kindString, usage: "root directory for cloned orgs",
-		envVar: "GH_ORG_CLONE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
+		envVar: "GH_ORG_CLONE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Root == nil {
 				return nil, false, nil
@@ -372,7 +402,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "timeout", kind: kindDuration, usage: "per-subprocess timeout",
-		envVar: "GH_ORG_CLONE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
+		envVar: "GH_ORG_CLONE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Timeout == nil {
 				return nil, false, nil
@@ -406,7 +436,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "protocol", kind: kindString, usage: "clone protocol: ssh or https",
-		envVar: "GH_ORG_CLONE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree, CmdClone),
+		envVar: "GH_ORG_CLONE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Protocol == nil {
 				return nil, false, nil
@@ -464,6 +494,28 @@ var settingsTable = []Setting{
 		flagName: "yes", kind: kindBool, usage: "don't prompt before removing worktrees to archive a repo they belong to",
 		commands: inCmd(CmdSync),
 		apply:    func(s *Settings, v any) { s.Yes = v.(bool) },
+	},
+	{
+		flagName: "worktree-root", kind: kindString, usage: "root directory new worktrees are placed under (default: the current directory)",
+		envVar: "GH_ORG_CLONE_WORKTREE_ROOT", configKey: "worktreeRoot", commands: inCmd(CmdWorktreeAdd),
+		fileValue: func(fc *FileConfig) (any, bool, error) {
+			if fc.WorktreeRoot == nil {
+				return nil, false, nil
+			}
+			return *fc.WorktreeRoot, true, nil
+		},
+		apply: func(s *Settings, v any) { s.WorktreeRoot = v.(string) },
+	},
+	{
+		flagName: "worktree-path", kind: kindString, usage: "worktree path template under worktree-root ({owner}, {repo}, {branch})",
+		envVar: "GH_ORG_CLONE_WORKTREE_PATH", configKey: "worktreePath", commands: inCmd(CmdWorktreeAdd),
+		fileValue: func(fc *FileConfig) (any, bool, error) {
+			if fc.WorktreePath == nil {
+				return nil, false, nil
+			}
+			return *fc.WorktreePath, true, nil
+		},
+		apply: func(s *Settings, v any) { s.WorktreePath = v.(string) },
 	},
 }
 

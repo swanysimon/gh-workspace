@@ -83,9 +83,11 @@ func TestSettingsFor(t *testing.T) {
 	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes", "tracked-only"}
 	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
+	worktreeOnly := []string{"worktree-root", "worktree-path"}
 
 	syncNames := flagNames(SettingsFor(CmdSync))
 	worktreeNames := flagNames(SettingsFor(CmdWorktree))
+	worktreeAddNames := flagNames(SettingsFor(CmdWorktreeAdd))
 	cloneNames := flagNames(SettingsFor(CmdClone))
 
 	for _, name := range shared {
@@ -95,8 +97,31 @@ func TestSettingsFor(t *testing.T) {
 		if !worktreeNames[name] {
 			t.Errorf("CmdWorktree is missing shared setting %q", name)
 		}
+		if !worktreeAddNames[name] {
+			t.Errorf("CmdWorktreeAdd is missing shared setting %q", name)
+		}
 		if !cloneNames[name] {
 			t.Errorf("CmdClone is missing shared setting %q", name)
+		}
+	}
+	// worktreeOnly is CmdWorktreeAdd-only, not CmdWorktree's: "worktree
+	// remove"/"worktree list" (which share CmdWorktree with "worktree add"
+	// for root/timeout/protocol) have no use for a default-path template
+	// at all, so they must not get these two flags, unlike "worktree add"
+	// itself, which gets its own narrower CmdWorktreeAdd on top of
+	// CmdWorktree's shared settings.
+	for _, name := range worktreeOnly {
+		if !worktreeAddNames[name] {
+			t.Errorf("CmdWorktreeAdd is missing worktree-only setting %q", name)
+		}
+		if worktreeNames[name] {
+			t.Errorf("CmdWorktree unexpectedly accepts worktree-only setting %q", name)
+		}
+		if syncNames[name] {
+			t.Errorf("CmdSync unexpectedly accepts worktree-only setting %q", name)
+		}
+		if cloneNames[name] {
+			t.Errorf("CmdClone unexpectedly accepts worktree-only setting %q", name)
 		}
 	}
 	for _, name := range syncAndClone {
@@ -127,6 +152,9 @@ func TestSettingsFor(t *testing.T) {
 	if got, want := len(worktreeNames), len(shared); got != want {
 		t.Errorf("CmdWorktree has %d settings, want %d (unexpected extra entries)", got, want)
 	}
+	if got, want := len(worktreeAddNames), len(shared)+len(worktreeOnly); got != want {
+		t.Errorf("CmdWorktreeAdd has %d settings, want %d (unexpected extra entries)", got, want)
+	}
 	if got, want := len(cloneNames), len(syncAndClone)+len(shared); got != want {
 		t.Errorf("CmdClone has %d settings, want %d (unexpected extra entries)", got, want)
 	}
@@ -148,7 +176,7 @@ func flagNames(settings []Setting) map[string]bool {
 // caller's job (gh.go's newFlagSet), not BindSettings'; see
 // settings_shim_test.go at the repo root for that integration-level check.
 func TestBindSettingsRegistersExactlyDeclaredFlags(t *testing.T) {
-	for _, cmd := range []CommandID{CmdSync, CmdWorktree, CmdClone} {
+	for _, cmd := range []CommandID{CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd} {
 		fs := pflag.NewFlagSet(string(cmd), pflag.ContinueOnError)
 		BindSettings(fs, cmd)
 

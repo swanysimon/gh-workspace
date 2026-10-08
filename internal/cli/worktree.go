@@ -49,9 +49,9 @@ func runWorktree(ctx context.Context, args []string, stdout, stderr io.Writer) i
 
 func printWorktreeUsage(w io.Writer) {
 	fmt.Fprintln(w, "USAGE")
-	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree list [flags] <org>/<repo>|<org>")
+	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]")
+	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
+	fmt.Fprintln(w, "  gh org-clone worktree list [flags] [<org>/<repo>|<org>]")
 }
 
 // newSubcommandFlagSet makes a subcommand's flag set whose -h/--help
@@ -134,9 +134,9 @@ func parseOwnerRepo(s string) (owner, repo string, err error) {
 }
 
 func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree add [flags] <org>/<repo> <branch> <path>"
+	const usage = "gh org-clone worktree add [flags] <org>/<repo> <branch> [path]"
 	fs, help := newSubcommandFlagSet("gh org-clone worktree add", usage, stderr)
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
+	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdIDWorktreeAdd, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -144,7 +144,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	if len(rest) != 3 {
+	if len(rest) != 2 && len(rest) != 3 {
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return exitUsage
 	}
@@ -154,12 +154,24 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 		return exitUsage
 	}
 	branch := rest[1]
-	path, err := absWorktreePath(rest[2])
+	cfg.Owner = owner
+
+	// An explicit path argument always wins, resolved against the current
+	// directory exactly as before and never subject to the under-
+	// worktree-root check -- "the user always specifies where a worktree
+	// lives" (AGENTS.md): where the command runs, a configured template,
+	// or an explicit path are all the user choosing. Only when path is
+	// omitted does the worktree-root/worktree-path template apply.
+	var path string
+	if len(rest) == 3 {
+		path, err = absWorktreePath(rest[2])
+	} else {
+		path, err = resolveWorktreePath(cfg, owner, repoName, branch)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	cfg.Owner = owner
 
 	if _, err := exec.LookPath("gh"); err != nil {
 		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
@@ -232,6 +244,19 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	if dirExists {
 		if err := fetchRepo(ctx, cfg, dir); err != nil {
 			fmt.Fprintf(stderr, "warning: could not fetch before adding worktree, using local refs: %v\n", err)
+		}
+	}
+
+	// A computed (not explicit) path that already exists needs a better
+	// hint than git's own error text would give: the obvious next step is
+	// an explicit path or a template that includes {branch}, not a
+	// generated alternative name -- "never pick an alternative name," per
+	// AIDEV.md. An explicit path hitting this is left to git's own error,
+	// unchanged from before this command could compute a path at all.
+	if len(rest) != 3 {
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(stderr, "worktree path %q already exists; pass an explicit path, or set --worktree-path to a template that resolves to a different path for this branch (note: \"/\" in a branch name is replaced with \"-\", so e.g. \"feat/x\" and \"feat-x\" can collide even with {branch} in the template)\n", path)
+			return exitRuntimeFail
 		}
 	}
 
@@ -308,7 +333,7 @@ func ensureClonedForWorktree(ctx context.Context, cfg config, repo ghRepo, stder
 }
 
 func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree remove [--force] [flags] <org>/<repo> <path>"
+	const usage = "gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>"
 	fs, help := newSubcommandFlagSet("gh org-clone worktree remove", usage, stderr)
 	var force bool
 	fs.BoolVar(&force, "force", false, "remove even if the worktree has uncommitted changes")
@@ -320,25 +345,46 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	if len(rest) != 2 {
+	if len(rest) != 1 && len(rest) != 2 {
 		fmt.Fprintln(stderr, "usage: "+usage)
-		return exitUsage
-	}
-	owner, repoName, err := parseOwnerRepo(rest[0])
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return exitUsage
-	}
-	cfg.Owner = owner
-	path, err := absWorktreePath(rest[1])
-	if err != nil {
-		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
 		return exitRuntimeFail
+	}
+
+	// The path-only form finds the owning repo via the worktree's own
+	// ".git" file, which (for a worktree, not a normal clone) is a plain
+	// text file naming the central clone's "<root>/<owner>/repos/<repo>"
+	// directory, not another repo's directory. See
+	// resolveWorktreeOwnerRepo.
+	var owner, repoName, path string
+	if len(rest) == 1 {
+		path, err = absWorktreePath(rest[0])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitUsage
+		}
+		owner, repoName, err = resolveWorktreeOwnerRepo(cfg, path)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitRuntimeFail
+		}
+		cfg.Owner = owner
+	} else {
+		owner, repoName, err = parseOwnerRepo(rest[0])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitUsage
+		}
+		cfg.Owner = owner
+		path, err = absWorktreePath(rest[1])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitUsage
+		}
 	}
 
 	dir := filepath.Join(reposDir(cfg), repoName)
@@ -361,7 +407,7 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 }
 
 func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree list [flags] <org>/<repo>|<org>"
+	const usage = "gh org-clone worktree list [flags] [<org>/<repo>|<org>]"
 	fs, help := newSubcommandFlagSet("gh org-clone worktree list", usage, stderr)
 	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
@@ -371,7 +417,7 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return exitUsage
 	}
@@ -379,6 +425,33 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
 		return exitRuntimeFail
+	}
+
+	if len(rest) == 0 {
+		// No arg: every worktree in the workspace, across every owner
+		// directory under cfg.Root -- see AIDEV.md's "worktree list
+		// [<owner>[/<repo>]] | No arg lists every worktree in the
+		// workspace."
+		ownerEntries, err := os.ReadDir(cfg.Root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitRuntimeFail
+		}
+		failed := false
+		for _, oe := range ownerEntries {
+			if !oe.IsDir() {
+				continue
+			}
+			ownerCfg := cfg
+			ownerCfg.Owner = oe.Name()
+			if listOwnerWorktrees(ctx, ownerCfg, stdout, stderr, true) {
+				failed = true
+			}
+		}
+		if failed {
+			return exitRuntimeFail
+		}
+		return exitSuccess
 	}
 
 	if strings.Contains(rest[0], "/") {
@@ -393,7 +466,7 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 			fmt.Fprintf(stderr, "no local clone of %s/%s at %s\n", owner, repoName, dir)
 			return exitRuntimeFail
 		}
-		if err := printWorktrees(ctx, cfg, repoName, stdout); err != nil {
+		if err := printWorktrees(ctx, cfg, repoName, repoName, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitRuntimeFail
 		}
@@ -406,10 +479,30 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	cfg.Owner = rest[0]
 
+	if listOwnerWorktrees(ctx, cfg, stdout, stderr, false) {
+		return exitRuntimeFail
+	}
+	return exitSuccess
+}
+
+// listOwnerWorktrees prints every repo's worktrees under one owner.
+// qualifyWithOwner controls whether each repo's header is "<repo>:" (the
+// existing "worktree list <org>" behavior, unchanged) or "<owner>/<repo>:"
+// (the bare, no-arg, whole-workspace form, where the owner would
+// otherwise be ambiguous). Reports true if any repo's listing failed, so
+// the caller can keep going through every other owner/repo and still
+// signal failure once at the end.
+func listOwnerWorktrees(ctx context.Context, cfg config, stdout, stderr io.Writer, qualifyWithOwner bool) bool {
 	entries, err := os.ReadDir(reposDir(cfg))
 	if err != nil {
+		if qualifyWithOwner && os.IsNotExist(err) {
+			// A bare, whole-workspace listing may see an owner directory
+			// that predates "repos/" existing as a concept (or simply has
+			// nothing cloned yet); that's not a failure.
+			return false
+		}
 		fmt.Fprintln(stderr, err)
-		return exitRuntimeFail
+		return true
 	}
 
 	failed := false
@@ -420,24 +513,25 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 		if _, err := os.Stat(filepath.Join(reposDir(cfg), e.Name(), ".git")); err != nil {
 			continue
 		}
-		if err := printWorktrees(ctx, cfg, e.Name(), stdout); err != nil {
+		label := e.Name()
+		if qualifyWithOwner {
+			label = cfg.Owner + "/" + label
+		}
+		if err := printWorktrees(ctx, cfg, e.Name(), label, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			failed = true
 		}
 	}
-	if failed {
-		return exitRuntimeFail
-	}
-	return exitSuccess
+	return failed
 }
 
-func printWorktrees(ctx context.Context, cfg config, repoName string, stdout io.Writer) error {
+func printWorktrees(ctx context.Context, cfg config, repoName, label string, stdout io.Writer) error {
 	dir := filepath.Join(reposDir(cfg), repoName)
 	out, err := runGit(ctx, cfg, dir, "worktree", "list")
 	if err != nil {
-		return fmt.Errorf("listing worktrees for %s: %w", repoName, err)
+		return fmt.Errorf("listing worktrees for %s: %w", label, err)
 	}
-	fmt.Fprintf(stdout, "%s:\n", repoName)
+	fmt.Fprintf(stdout, "%s:\n", label)
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		if line == "" {
 			continue

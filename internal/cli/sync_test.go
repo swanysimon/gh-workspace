@@ -498,3 +498,59 @@ func TestRunSyncWorkspaceBatchFailureFailsOwnerEvenWithListingTasks(t *testing.T
 		t.Fatalf("Run() = %d, want %d (batch lookup failed); stdout=%s stderr=%s", code, exitRuntimeFail, stdout.String(), stderr.String())
 	}
 }
+
+// TestRunSyncWorkspaceNoOpCostsExactlyOneGhCallPerOwnerOrBatch is the
+// invariant AIDEV.md calls out explicitly: "a no-op sync stays cheap."
+// Two configured owners (one listing call each) plus one explicit repo
+// outside them (one batched call, not one gh repo view) must together
+// cost exactly 3 gh calls and zero git calls when nothing has changed.
+func TestRunSyncWorkspaceNoOpCostsExactlyOneGhCallPerOwnerOrBatch(t *testing.T) {
+	originA := initTestRepo(t)
+	originB := initTestRepo(t)
+	originC := initTestRepo(t)
+	pushedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	fake := newFakeGhForSync()
+	fake.listingsByOwner["owner-a"] = repoListJSON(t, []ghRepo{
+		{ID: "RA", Name: "repoa", NameWithOwner: "owner-a/repoa", URL: "file://" + originA, SSHURL: "file://" + originA, DefaultBranch: &ghRefName{Name: "main"}, PushedAt: pushedAt},
+	})
+	fake.listingsByOwner["owner-b"] = repoListJSON(t, []ghRepo{
+		{ID: "RB", Name: "repob", NameWithOwner: "owner-b/repob", URL: "file://" + originB, SSHURL: "file://" + originB, DefaultBranch: &ghRefName{Name: "main"}, PushedAt: pushedAt},
+	})
+	fake.graphQLResponse = fmt.Sprintf(
+		`{"data":{"r0":{"id":"RC","name":"repoc","nameWithOwner":"owner-c/repoc","url":"file://%s","sshUrl":"file://%s","defaultBranchRef":{"name":"main"},"pushedAt":"2026-01-01T00:00:00Z"}}}`,
+		originC, originC)
+
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = fake.exec
+
+	root := t.TempDir()
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	body := `{"owners":[{"name":"owner-a"},{"name":"owner-b"}],"repos":["owner-c/repoc"]}`
+	if err := os.WriteFile(configFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// First run: populates state for all three repos.
+	var stdout1, stderr1 bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--root", root, "--protocol", "https", "--config", configFile}, &stdout1, &stderr1); code != exitSuccess {
+		t.Fatalf("first Run() = %d, stderr=%s", code, stderr1.String())
+	}
+
+	// Second run: nothing changed (same pushedAt everywhere) -- this is
+	// the no-op this test is really about.
+	fake.ghCalls.Store(0)
+	fake.gitCalls.Store(0)
+	var stdout2, stderr2 bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--root", root, "--protocol", "https", "--config", configFile}, &stdout2, &stderr2); code != exitSuccess {
+		t.Fatalf("second Run() = %d, stderr=%s", code, stderr2.String())
+	}
+
+	if got := fake.ghCalls.Load(); got != 3 {
+		t.Fatalf("gh was called %d times on a no-op run, want exactly 3 (one per owner's listing, plus one batch call for the explicit repo); stdout=%s stderr=%s", got, stdout2.String(), stderr2.String())
+	}
+	if got := fake.gitCalls.Load(); got != 0 {
+		t.Fatalf("git was called %d times on a no-op run, want 0", got)
+	}
+}

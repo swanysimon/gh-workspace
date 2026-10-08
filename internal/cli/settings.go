@@ -5,21 +5,23 @@ import (
 	"github.com/swanysimon/gh-org-clone/internal/settings"
 )
 
-// commandID, cmdSync, cmdWorktree, cmdIDClone, and boundFlags are aliases
-// for internal/settings' types/consts, which now hold the real settings
-// table (settings.go's old content, moved verbatim, operating on a plain
-// settings.Settings instead of config -- see config's embedding of
-// settings.Settings in main.go). cmdIDClone (not cmdClone) specifically to
-// avoid colliding with clone.go's cmdClone function, the only command in
-// this file whose dispatch function and settings-table commandID would
-// otherwise want the exact same name.
+// commandID, cmdSync, cmdWorktree, cmdIDWorktreeAdd, cmdIDClone, and
+// boundFlags are aliases for internal/settings' types/consts, which now
+// hold the real settings table (settings.go's old content, moved
+// verbatim, operating on a plain settings.Settings instead of config --
+// see config's embedding of settings.Settings in main.go). cmdIDClone and
+// cmdIDWorktreeAdd (not cmdClone/cmdWorktreeAdd) specifically to avoid
+// colliding with clone.go's cmdClone and worktree.go's cmdWorktreeAdd
+// dispatch functions, which otherwise want the exact same names as their
+// settings-table commandIDs.
 type commandID = settings.CommandID
 type boundFlags = settings.BoundFlags
 
 const (
-	cmdSync     = settings.CmdSync
-	cmdWorktree = settings.CmdWorktree
-	cmdIDClone  = settings.CmdClone
+	cmdSync          = settings.CmdSync
+	cmdWorktree      = settings.CmdWorktree
+	cmdIDWorktreeAdd = settings.CmdWorktreeAdd
+	cmdIDClone       = settings.CmdClone
 )
 
 // bindSettings registers every setting applicable to cmd onto fs; see

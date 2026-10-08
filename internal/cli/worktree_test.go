@@ -217,6 +217,64 @@ func TestWorktreeRemove(t *testing.T) {
 	}
 }
 
+func TestWorktreeRemovePathOnlyFormFindsOwningRepo(t *testing.T) {
+	origin := initTestRepo(t)
+	cfg := testConfig(t, t.TempDir())
+	cfg.Protocol = "https"
+	if err := os.MkdirAll(reposDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := ghRepo{Name: "repo1", URL: "file://" + origin}
+	if err := cloneRepo(context.Background(), cfg, repo); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(reposDir(cfg), "repo1")
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if _, err := execCommand(context.Background(), dir, "git", "worktree", "add", "-b", "feature", wtPath, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, wtPath}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeRemove = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("worktree should be gone, stat err = %v", err)
+	}
+}
+
+func TestWorktreeRemovePathOnlyRejectsNonWorktreePath(t *testing.T) {
+	cfg := testConfig(t, t.TempDir())
+	notAWorktree := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, notAWorktree}, &stdout, &stderr)
+	if code != exitRuntimeFail {
+		t.Fatalf("cmdWorktreeRemove = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
+	}
+}
+
+func TestWorktreeRemovePathOnlyRejectsRepoCloneItself(t *testing.T) {
+	origin := initTestRepo(t)
+	cfg := testConfig(t, t.TempDir())
+	cfg.Protocol = "https"
+	if err := os.MkdirAll(reposDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := ghRepo{Name: "repo1", URL: "file://" + origin}
+	if err := cloneRepo(context.Background(), cfg, repo); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(reposDir(cfg), "repo1")
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeRemove(context.Background(), []string{"--root", cfg.Root, dir}, &stdout, &stderr)
+	if code != exitRuntimeFail {
+		t.Fatalf("cmdWorktreeRemove = %d, want %d (the central clone itself, not a worktree); stderr=%s", code, exitRuntimeFail, stderr.String())
+	}
+}
+
 func TestWorktreeRemoveRefusesDirtyWithoutForce(t *testing.T) {
 	origin := initTestRepo(t)
 	cfg := testConfig(t, t.TempDir())
@@ -650,5 +708,230 @@ func TestResolveSubcommandConfigExpandsHomeInRoot(t *testing.T) {
 	want := filepath.Join(home, "src/.workspace")
 	if cfg.Root != want {
 		t.Errorf("cfg.Root = %q, want %q", cfg.Root, want)
+	}
+}
+
+// TestWorktreeAddDefaultsToCurrentDirectoryAndRepoName confirms the
+// documented default (worktreeRoot = current directory, worktreePath =
+// "{repo}") actually applies end to end through cmdWorktreeAdd when path
+// is omitted -- no owner segment in the resulting path.
+func TestWorktreeAddDefaultsToCurrentDirectoryAndRepoName(t *testing.T) {
+	origin := initTestRepo(t)
+	if _, err := execCommand(context.Background(), origin, "git", "branch", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	stubGhRepoView(t, ghRepo{
+		ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1",
+		URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"},
+	})
+
+	root := t.TempDir()
+	cwd := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", root, "--protocol", "https", "myorg/repo1", "feature"}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+
+	want := filepath.Join(cwd, "repo1")
+	if _, err := os.Stat(filepath.Join(want, "file.txt")); err != nil {
+		t.Fatalf("worktree should have landed at <cwd>/<repo> (%s): %v", want, err)
+	}
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("stdout should report the resolved path %q: %q", want, stdout.String())
+	}
+}
+
+// TestWorktreeAddSecondBranchSamePathFailsWithHint confirms a second
+// worktree computed to the same default path (two branches of the same
+// repo, no explicit path, default "{repo}" template with no {branch})
+// fails with the documented hint, not a renamed/alternate path.
+func TestWorktreeAddSecondBranchSamePathFailsWithHint(t *testing.T) {
+	origin := initTestRepo(t)
+	for _, b := range []string{"feature", "feature2"} {
+		if _, err := execCommand(context.Background(), origin, "git", "branch", b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubGhRepoView(t, ghRepo{
+		ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1",
+		URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"},
+	})
+
+	root := t.TempDir()
+	cwd := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	var stdout1, stderr1 bytes.Buffer
+	if code := cmdWorktreeAdd(context.Background(), []string{"--root", root, "--protocol", "https", "myorg/repo1", "feature"}, &stdout1, &stderr1); code != exitSuccess {
+		t.Fatalf("first cmdWorktreeAdd = %d, stderr=%s", code, stderr1.String())
+	}
+
+	var stdout2, stderr2 bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{"--root", root, "--protocol", "https", "myorg/repo1", "feature2"}, &stdout2, &stderr2)
+	if code != exitRuntimeFail {
+		t.Fatalf("second cmdWorktreeAdd = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr2.String())
+	}
+	if !strings.Contains(stderr2.String(), "already exists") || !strings.Contains(stderr2.String(), "{branch}") {
+		t.Fatalf("stderr should hint at an explicit path or a {branch} template: %q", stderr2.String())
+	}
+}
+
+// TestWorktreeAddConfiguredTemplateWithBranchSlash confirms a configured
+// --worktree-path containing {branch}, given a branch name with a "/",
+// lands the worktree with the slash replaced by a dash, not an extra
+// directory level.
+func TestWorktreeAddConfiguredTemplateWithBranchSlash(t *testing.T) {
+	origin := initTestRepo(t)
+	if _, err := execCommand(context.Background(), origin, "git", "branch", "feat/x"); err != nil {
+		t.Fatal(err)
+	}
+	stubGhRepoView(t, ghRepo{
+		ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1",
+		URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"},
+	})
+
+	root := t.TempDir()
+	wtRoot := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", root, "--protocol", "https",
+		"--worktree-root", wtRoot, "--worktree-path", "{repo}/{branch}",
+		"myorg/repo1", "feat/x",
+	}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+
+	want := filepath.Join(wtRoot, "repo1", "feat-x")
+	if _, err := os.Stat(filepath.Join(want, "file.txt")); err != nil {
+		t.Fatalf("worktree should have landed at %s: %v", want, err)
+	}
+}
+
+// TestWorktreeAddRejectsRelativeWorktreeRoot confirms a relative
+// --worktree-root is rejected the same way a relative --root already is.
+func TestWorktreeAddRejectsRelativeWorktreeRoot(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", t.TempDir(), "--worktree-root", "relative/path",
+		"myorg/repo1", "main",
+	}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("cmdWorktreeAdd = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+}
+
+// TestWorktreeAddExplicitPathOutsideWorktreeRootAllowed confirms an
+// explicit path argument is never subject to the under-worktree-root
+// check -- "the user always specifies where a worktree lives."
+func TestWorktreeAddExplicitPathOutsideWorktreeRootAllowed(t *testing.T) {
+	origin := initTestRepo(t)
+	if _, err := execCommand(context.Background(), origin, "git", "branch", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	stubGhRepoView(t, ghRepo{
+		ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1",
+		URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"},
+	})
+
+	root := t.TempDir()
+	wtRoot := t.TempDir()
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", root, "--protocol", "https", "--worktree-root", wtRoot,
+		"myorg/repo1", "feature", elsewhere,
+	}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "file.txt")); err != nil {
+		t.Fatalf("worktree should have landed at the explicit path %s: %v", elsewhere, err)
+	}
+}
+
+// TestWorktreeListWorkspaceWideNoArg confirms "worktree list" with no
+// positional at all lists every worktree across every owner directory
+// under cfg.Root, each repo's header qualified with its owner so output
+// across owners is never ambiguous.
+func TestWorktreeListWorkspaceWideNoArg(t *testing.T) {
+	originA := initTestRepo(t)
+	originB := initTestRepo(t)
+	root := t.TempDir()
+
+	cfgA := testConfig(t, root)
+	cfgA.Owner = "owner-a"
+	cfgA.Protocol = "https"
+	if err := os.MkdirAll(reposDir(cfgA), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloneRepo(context.Background(), cfgA, ghRepo{Name: "repoa", URL: "file://" + originA}); err != nil {
+		t.Fatal(err)
+	}
+	wtA := filepath.Join(t.TempDir(), "wta")
+	if _, err := execCommand(context.Background(), filepath.Join(reposDir(cfgA), "repoa"), "git", "worktree", "add", "-b", "feature-a", wtA, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgB := testConfig(t, root)
+	cfgB.Owner = "owner-b"
+	cfgB.Protocol = "https"
+	if err := os.MkdirAll(reposDir(cfgB), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloneRepo(context.Background(), cfgB, ghRepo{Name: "repob", URL: "file://" + originB}); err != nil {
+		t.Fatal(err)
+	}
+	wtB := filepath.Join(t.TempDir(), "wtb")
+	if _, err := execCommand(context.Background(), filepath.Join(reposDir(cfgB), "repob"), "git", "worktree", "add", "-b", "feature-b", wtB, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeList(context.Background(), []string{"--root", root}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
+	}
+
+	out := stdout.String()
+	for _, want := range []string{"owner-a/repoa:", wtA, "owner-b/repob:", wtB} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestWorktreeListWorkspaceWideSkipsOwnersWithNothingCloned confirms an
+// owner directory with no "repos/" subdirectory at all (nothing ever
+// cloned for it) is not an error for the workspace-wide form.
+func TestWorktreeListWorkspaceWideSkipsOwnersWithNothingCloned(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "empty-owner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeList(context.Background(), []string{"--root", root}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
 	}
 }
