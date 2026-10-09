@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/swanysimon/gh-org-clone/internal/execx"
+import "github.com/swanysimon/gh-workspace/internal/execx"
 
 // Exec is a type alias (not a new named type) for execx.Exec, so every
 // existing fake exec function written against the old local Exec type

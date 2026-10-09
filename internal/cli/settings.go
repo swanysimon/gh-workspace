@@ -2,7 +2,7 @@ package cli
 
 import (
 	"github.com/spf13/pflag"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 // commandID, cmdSync, cmdWorktree, cmdIDWorktreeAdd, cmdIDClone, and

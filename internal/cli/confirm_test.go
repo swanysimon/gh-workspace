@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 func TestDefaultConfirmArchiveWithWorktreesYes(t *testing.T) {

@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/swanysimon/gh-org-clone/internal/archive"
+import "github.com/swanysimon/gh-workspace/internal/archive"
 
 // defaultConfirmArchiveWithWorktrees is confirmDefault's production value
 // (see deps.go), now a thin shim over archive.DefaultConfirm, which holds

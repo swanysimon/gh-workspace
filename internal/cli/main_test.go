@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 func TestConfigVerboseAliases(t *testing.T) {
@@ -88,8 +88,8 @@ func TestConfigPrecedence(t *testing.T) {
 	}
 
 	// (b) env beats file: override concurrency and protocol via env.
-	t.Setenv("GH_ORG_CLONE_CONCURRENCY", "6")
-	t.Setenv("GH_ORG_CLONE_PROTOCOL", "ssh")
+	t.Setenv("GH_WORKSPACE_CONCURRENCY", "6")
+	t.Setenv("GH_WORKSPACE_PROTOCOL", "ssh")
 	cfg, _, err = resolveConfig([]string{"--config", configPath, "myorg"}, os.Stderr)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -230,10 +230,10 @@ func TestConfigAcceptsValidOwnersAndRepos(t *testing.T) {
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"XDG_DATA_HOME", "XDG_CONFIG_HOME", "GH_ORG_CLONE_CONFIG",
-		"GH_ORG_CLONE_ROOT", "GH_ORG_CLONE_CONCURRENCY", "GH_ORG_CLONE_TIMEOUT",
-		"GH_ORG_CLONE_MAX_REPOS", "GH_ORG_CLONE_PROTOCOL", "GH_ORG_CLONE_INCLUDE_FORKS",
-		"GH_ORG_CLONE_ARCHIVE",
+		"XDG_DATA_HOME", "XDG_CONFIG_HOME", "GH_WORKSPACE_CONFIG",
+		"GH_WORKSPACE_ROOT", "GH_WORKSPACE_CONCURRENCY", "GH_WORKSPACE_TIMEOUT",
+		"GH_WORKSPACE_MAX_REPOS", "GH_WORKSPACE_PROTOCOL", "GH_WORKSPACE_INCLUDE_FORKS",
+		"GH_WORKSPACE_ARCHIVE",
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)

@@ -139,6 +139,48 @@ func TestCmdUntrackClearsTrackedBit(t *testing.T) {
 	}
 }
 
+func TestCmdUntrackRefusesWhenConfigTracksRepo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"via owners", `{"owners": [{"name": "myorg"}]}`},
+		{"via repos", `{"repos": ["myorg/repo1"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := testConfig(t, root)
+			cfg.Owner = "myorg"
+			mustMkReposDir(t, cfg)
+			st := state{Version: stateVersion, Org: "myorg", Repos: map[string]repoState{
+				"repo1": {ID: "R1", Status: statusCloned, Tracked: true},
+			}}
+			if err := saveState(statePath(cfg), st); err != nil {
+				t.Fatal(err)
+			}
+
+			configFile := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(configFile, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := cmdUntrack(context.Background(), []string{"--root", root, "--config", configFile, "myorg/repo1"}, &stdout, &stderr)
+			if code != exitRuntimeFail {
+				t.Fatalf("cmdUntrack = %d, want %d; stderr=%s", code, exitRuntimeFail, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "still tracked by the config") {
+				t.Fatalf("unexpected stderr: %q", stderr.String())
+			}
+
+			got := loadState(statePath(cfg), "myorg", &stderr)
+			if !got.Repos["repo1"].Tracked {
+				t.Fatalf("Tracked should still be true -- untrack must not have touched state on refusal")
+			}
+		})
+	}
+}
+
 func TestCmdUntrackNoLocalDataIsAnError(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfig(t, root)

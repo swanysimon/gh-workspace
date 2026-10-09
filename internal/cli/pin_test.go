@@ -20,7 +20,7 @@ import (
 // the cobra port is exactly the "expected, deliberate difference" the plan
 // asks to record -- or a real regression, if it wasn't expected.
 
-// homeFor gives a deterministic $HOME (and clears every GH_ORG_CLONE_* env
+// homeFor gives a deterministic $HOME (and clears every GH_WORKSPACE_* env
 // var, since a real one leaking from the test runner's shell would make the
 // "default root" assertions below flaky) so the "(default ...)" text in
 // --help output, which embeds defaultRoot(), is a fixed string across runs
@@ -30,7 +30,7 @@ func homeFor(t *testing.T) (home, defaultDataRoot string) {
 	clearConfigEnv(t)
 	home = t.TempDir()
 	t.Setenv("HOME", home)
-	return home, filepath.Join(home, ".local", "share", "gh-org-clone")
+	return home, filepath.Join(home, ".local", "share", "gh-workspace")
 }
 
 func TestPinTopLevelHelp(t *testing.T) {
@@ -47,14 +47,14 @@ func TestPinTopLevelHelp(t *testing.T) {
 
 	want := "Clone and keep local mirrors of every repository in a GitHub org.\n\n" +
 		"USAGE\n" +
-		"  gh org-clone [flags] <org>\n" +
-		"  gh org-clone sync [flags] [<org>[/<repo>]]\n" +
-		"  gh org-clone clone [flags] <org>/<repo>...\n" +
-		"  gh org-clone untrack [flags] <org>/<repo>\n" +
-		"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n" +
-		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
-		"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n\n" +
-		"Run \"gh org-clone worktree <command> --help\" for a worktree command's flags.\n\n" +
+		"  gh workspace [flags] <org>\n" +
+		"  gh workspace sync [flags] [<org>[/<repo>]]\n" +
+		"  gh workspace clone [flags] <org>/<repo>...\n" +
+		"  gh workspace untrack [flags] <org>/<repo>\n" +
+		"  gh workspace worktree add [flags] <org>/<repo> <branch> [path]\n" +
+		"  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
+		"  gh workspace worktree list [flags] [<org>/<repo>|<org>]\n\n" +
+		"Run \"gh workspace worktree <command> --help\" for a worktree command's flags.\n\n" +
 		"FLAGS\n" +
 		"      --root string        root directory for cloned orgs (default \"" + root + "\")\n" +
 		"      --concurrency int    number of repos to sync in parallel (default 8)\n" +
@@ -84,7 +84,7 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 		{
 			args: []string{"worktree", "add", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n\n" +
+				"  gh workspace worktree add [flags] <org>/<repo> <branch> [path]\n\n" +
 				"FLAGS\n" +
 				"      --config string          path to a JSON config file\n" +
 				"      --protocol string        clone protocol: ssh or https (default \"ssh\")\n" +
@@ -96,7 +96,7 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 		{
 			args: []string{"worktree", "remove", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n\n" +
+				"  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n\n" +
 				"FLAGS\n" +
 				"      --config string      path to a JSON config file\n" +
 				"      --force              remove even if the worktree has uncommitted changes\n" +
@@ -107,7 +107,7 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 		{
 			args: []string{"worktree", "list", "--help"},
 			want: "USAGE\n" +
-				"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n\n" +
+				"  gh workspace worktree list [flags] [<org>/<repo>|<org>]\n\n" +
 				"FLAGS\n" +
 				"      --config string      path to a JSON config file\n" +
 				"      --protocol string    clone protocol: ssh or https (default \"ssh\")\n" +
@@ -133,9 +133,9 @@ func TestPinWorktreeUsageOnBadInvocation(t *testing.T) {
 	homeFor(t)
 
 	worktreeUsage := "USAGE\n" +
-		"  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]\n" +
-		"  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
-		"  gh org-clone worktree list [flags] [<org>/<repo>|<org>]\n"
+		"  gh workspace worktree add [flags] <org>/<repo> <branch> [path]\n" +
+		"  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
+		"  gh workspace worktree list [flags] [<org>/<repo>|<org>]\n"
 
 	cases := []struct {
 		name string

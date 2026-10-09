@@ -26,9 +26,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/execx"
-	"github.com/swanysimon/gh-org-clone/internal/gitcli"
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/gitcli"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
 const ManifestVersion = 1

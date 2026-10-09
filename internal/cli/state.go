@@ -3,7 +3,7 @@ package cli
 import (
 	"io"
 
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
 // state, repoState, repoStatus, stateVersion, statusCloned, statusArchived

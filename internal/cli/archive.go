@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/swanysimon/gh-org-clone/internal/archive"
+import "github.com/swanysimon/gh-workspace/internal/archive"
 
 // worktreeStatus is an alias for archive.WorktreeStatus, so
 // deps.go's ConfirmFunc type and every existing worktreeStatus{...} literal

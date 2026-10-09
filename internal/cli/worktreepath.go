@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 // resolveWorktreePath computes an "add"'s target directory when no

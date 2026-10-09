@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/execx"
 )
 
 // initTestRepo creates a real git repo in a fresh temp dir with one commit

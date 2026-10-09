@@ -1504,29 +1504,91 @@ Each bullet group is its own jj change.
 
 ## Phase 4 — Rename the surface
 
-- [ ] jj: `jj new -m "feat!: rename gh-org-clone to gh-workspace"`.
-- [ ] `go.mod` module path and imports.
-- [ ] Env prefix `GH_ORG_CLONE_*` → `GH_WORKSPACE_*` (settings table, one
+- [x] jj: `jj new -m "feat!: rename gh-org-clone to gh-workspace"`.
+- [x] `go.mod` module path and imports. `go mod tidy` run after.
+- [x] Env prefix `GH_ORG_CLONE_*` → `GH_WORKSPACE_*` (settings table, one
       place now). No fallback, per Phase 0.
-- [ ] Default data directory `…/gh-org-clone` → `…/gh-workspace`, and config
+- [x] Default data directory `…/gh-org-clone` → `…/gh-workspace`, and config
       path `~/.config/gh-workspace/config.json`.
-- [ ] Every user-facing `gh org-clone` / `gh-org-clone` string: grep for
-      them, including the lock error, "requires gh on PATH" messages, and
-      usage text.
-- [ ] Rename the GitHub repo to `swanysimon/gh-workspace` (gh extensions
-      must be named `gh-<name>`). GitHub redirects the old URL; nothing
-      else depends on the old name.
-- [ ] README: install, workspace model, command reference, config table
-      (generated from the settings table if cheap to do), and file layout.
-- [ ] AGENTS.md: rewrite for the workspace model. Keep the still-true
-      invariants (no-op cost, per-repo skipping, never deleting, the
-      worktree prompt, the jj-first rule).
-- [ ] No MIGRATING.md (clean break). Manual steps for my own machine:
-      `gh extension remove org-clone`, `gh extension install
-      swanysimon/gh-workspace`, `mv ~/.local/share/gh-org-clone
-      ~/.local/share/gh-workspace` (v1 state migrates on first run), move
-      `~/.config/gh-org-clone/config.json` to the new path, and rename any
-      `GH_ORG_CLONE_*` exports in my shell config.
+- [x] Every user-facing `gh org-clone` / `gh-org-clone` string: grepped for
+      them (the lock error, "requires gh/git on PATH" messages, usage text,
+      `--help` output) and renamed mechanically across every `.go` file,
+      `README.md`, and `go.mod`. **Scope decision, asked and answered
+      explicitly rather than assumed**: the *tool's own name* renamed
+      (`gh-org-clone`→`gh-workspace`, `gh org-clone`→`gh workspace` in
+      invocation syntax), but the unrelated `<org>` placeholder/"org" wording
+      in flags, error text, and usage (e.g. `"org must not be empty"`,
+      `<org>/<repo>`) was deliberately **left alone** — a separate
+      terminology question from the tool's name, decided not to pursue now.
+      `go build`/`vet`/`gofmt`/`test -race` clean on every package
+      afterward, including the full `TestPin*` suite (whose golden
+      `--help` text now says `gh workspace`), with zero assertion changes
+      needed beyond what the rename itself touched (the env-var list and
+      literal usage strings the tests already pinned).
+- [x] Renamed the GitHub repo to `swanysimon/gh-workspace` (gh extensions
+      must be named `gh-<name>`). Done by the user directly (`gh repo
+      rename`), not by me — this session's auto-mode permission
+      classifier blocks external GitHub writes like this one, so I asked
+      and the user ran it themselves. Confirmed via `gh repo view
+      swanysimon/gh-workspace`. The local `origin` remote's URL was
+      updated to match (`git remote set-url`); GitHub redirects the old
+      URL regardless, so nothing else depends on the old name.
+- [x] README: rewritten for the workspace model — install, what's tracked,
+      `sync`/`clone`/`untrack`/`worktree` usage (including worktree
+      placement defaults and the template syntax), the full settings table
+      (including the two new worktree flags), an `owners`/`repos` config
+      example, file layout, and an added note on per-owner (not
+      workspace-wide) locking. Not literally generated from the settings
+      table (judged not cheap enough to automate for one doc, given the
+      table mixes flags with no env/config key at all) — written by hand
+      against the table's actual current contents instead, and the
+      command examples verified against the real `--help` output of each
+      command (top-level, `sync`, `clone`, `untrack`, `worktree
+      add`/`remove`/`list`) rather than assumed.
+  - **Independent review found one real bug this doc rewrite exposed,
+    fixed before this step was marked done**: README.md and AGENTS.md both
+    stated, as current behavior, that `untrack` refuses when the config's
+    `owners`/`repos` still track the repo — but that check had never
+    actually been implemented. `cmdUntrack` (`internal/cli/clone.go`) still
+    carried the exact `AIDEV:` comment from the "clone and untrack
+    commands" step (Phase 3) saying this was deliberately deferred because
+    the config's `owners`/`repos` shape didn't exist yet — except it has,
+    since the very next Phase 3 step shipped it, and nobody circled back.
+    The reviewer caught this by testing the real binary against the docs'
+    own claim, not just reading code. Fixed: new `configTracks(fc, owner,
+    repoName) (reason string, tracked bool)` in `clone.go`, checked in
+    `cmdUntrack` before it clears `Tracked`, naming either the matching
+    `owners` entry or the matching `repos` entry in the refusal message.
+    Needed `resolveSubcommandConfig` to also return the loaded
+    `*fileConfig` (it previously discarded it) — the same kind of small,
+    mechanical signature change `resolveConfig` already went through in
+    the sync-feature step for the same reason; all five other call sites
+    (worktree add/remove/list, clone, plus one test) updated to discard
+    the new return value with `_`.
+    `TestCmdUntrackRefusesWhenConfigTracksRepo` (two subcases: tracked via
+    `owners`, tracked via `repos`) pins it, and also asserts state is left
+    untouched on refusal. Verified the test actually catches the
+    regression by disabling the new check in a scratch copy and watching
+    it fail before trusting it. `go build`/`vet`/`gofmt`/
+    `test -race -count=1` clean on every package afterward.
+  - Also fixed, found by the same review: `.gitignore` still ignored
+    `/gh-org-clone` instead of `/gh-workspace` (missed by the rename sed,
+    which only touched `.go`/`README.md`/`go.mod`).
+- [x] AGENTS.md: rewritten for the workspace model (tracking rule, all six
+      commands, the no-op-cost/never-delete/dirty-tree/worktree-placement/
+      archive-prompt/per-owner-lock invariants) in the same voice as the
+      original (short, declarative, not a copy of AIDEV.md's much longer
+      design history — pointed at it for that instead). Kept the jj-first
+      process rule verbatim, as asked.
+- [x] No MIGRATING.md (clean break) — nothing to write, by design. Manual
+      steps for my own machine, checked directly rather than assumed:
+      `gh extension list` shows **no extensions installed at all** on this
+      machine (empty list, exit 0), and neither `~/.local/share/gh-org-clone`
+      nor `~/.config/gh-org-clone` exist, nor does any `GH_ORG_CLONE_*`
+      export appear in `~/.zshrc`/`~/.zprofile`/`~/.bashrc`/
+      `~/.bash_profile`/`~/.profile`/`~/.config/fish/config.fish`. This
+      machine has never actually run the extension — there is nothing to
+      remove, move, or rename. Nothing done here beyond confirming that.
 
 ## Phase 5 — Release
 

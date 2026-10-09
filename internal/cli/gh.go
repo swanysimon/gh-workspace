@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 
-	"github.com/swanysimon/gh-org-clone/internal/ghcli"
+	"github.com/swanysimon/gh-workspace/internal/ghcli"
 )
 
 // ghRepo, ghRefName, ghJSONFields and the two functions below are thin

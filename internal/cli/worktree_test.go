@@ -635,8 +635,8 @@ func TestWorktreeIgnoresUnrelatedEnv(t *testing.T) {
 	if err := cloneRepo(context.Background(), cfg, ghRepo{Name: "repo1", URL: "file://" + origin}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GH_ORG_CLONE_CONCURRENCY", "lots")
-	t.Setenv("GH_ORG_CLONE_ARCHIVE", "maybe")
+	t.Setenv("GH_WORKSPACE_CONCURRENCY", "lots")
+	t.Setenv("GH_WORKSPACE_ARCHIVE", "maybe")
 
 	var stdout, stderr bytes.Buffer
 	if code := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitSuccess {
@@ -644,10 +644,10 @@ func TestWorktreeIgnoresUnrelatedEnv(t *testing.T) {
 	}
 
 	// A worktree setting with a bad value still fails.
-	t.Setenv("GH_ORG_CLONE_TIMEOUT", "soon")
+	t.Setenv("GH_WORKSPACE_TIMEOUT", "soon")
 	stderr.Reset()
 	if code := cmdWorktreeList(context.Background(), []string{"--root", cfg.Root, "testorg/repo1"}, &stdout, &stderr); code != exitUsage {
-		t.Fatalf("cmdWorktreeList with bad GH_ORG_CLONE_TIMEOUT = %d, want %d", code, exitUsage)
+		t.Fatalf("cmdWorktreeList with bad GH_WORKSPACE_TIMEOUT = %d, want %d", code, exitUsage)
 	}
 }
 
@@ -700,8 +700,8 @@ func TestResolveSubcommandConfigExpandsHomeInRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	fs, help := newSubcommandFlagSet("gh org-clone worktree add", "usage", io.Discard)
-	cfg, _, err := resolveSubcommandConfig(fs, help, cmdWorktree, []string{"--root", "~/src/.workspace", "myorg/repo", "branch", "/tmp/x"})
+	fs, help := newSubcommandFlagSet("gh workspace worktree add", "usage", io.Discard)
+	cfg, _, _, err := resolveSubcommandConfig(fs, help, cmdWorktree, []string{"--root", "~/src/.workspace", "myorg/repo", "branch", "/tmp/x"})
 	if err != nil {
 		t.Fatalf("resolveSubcommandConfig: %v", err)
 	}

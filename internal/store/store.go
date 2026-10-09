@@ -68,7 +68,7 @@ func AcquireLock(root, owner string) (release func(), err error) {
 	lp := LockPath(root, owner)
 	f, err := os.OpenFile(lp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("another gh-org-clone run appears to be in progress for org %q (lock file %s exists; delete it if a previous run died): %w", owner, lp, err)
+		return nil, fmt.Errorf("another gh-workspace run appears to be in progress for org %q (lock file %s exists; delete it if a previous run died): %w", owner, lp, err)
 	}
 	fmt.Fprintf(f, "%d %s\n", os.Getpid(), time.Now().Format(time.RFC3339))
 	f.Close()

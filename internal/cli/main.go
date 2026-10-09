@@ -1,4 +1,4 @@
-// Package cli is gh-org-clone's command dispatch, flag parsing, and help
+// Package cli is gh-workspace's command dispatch, flag parsing, and help
 // text: the only package that knows command names (sync's bare <org> form,
 // "worktree add/remove/list"), and the only one that resolves this tool's
 // settings struct (config, wrapping settings.Settings plus Owner and Deps)
@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-	"github.com/swanysimon/gh-org-clone/internal/engine"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 const (
@@ -51,7 +51,7 @@ type fileConfig = settings.FileConfig
 // flag we register and check ourselves on every FlagSet.
 var errHelpRequested = errors.New("help requested")
 
-// Run is gh-org-clone's single entry point, called by the root package's
+// Run is gh-workspace's single entry point, called by the root package's
 // main() with os.Args[1:]/os.Stdout/os.Stderr. It is the only exported name
 // in this package: everything else -- command dispatch, config resolution,
 // help text -- is this package's own business, and nothing outside it
@@ -87,18 +87,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // runSingleOwnerSync is the full-listing sync of one owner -- today's bare
-// "gh org-clone <org>" and (as of the sync subcommand's introduction) its
-// equivalent explicit form, "gh org-clone sync <org>". Extracted out of
+// "gh workspace <org>" and (as of the sync subcommand's introduction) its
+// equivalent explicit form, "gh workspace sync <org>". Extracted out of
 // Run() so both entry points share one implementation instead of two
 // copies that could drift -- see AIDEV.md "Bare gh workspace <owner> stays
 // as an undocumented alias for sync <owner>."
 func runSingleOwnerSync(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 
@@ -323,15 +323,15 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Clone and keep local mirrors of every repository in a GitHub org.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "USAGE")
-	fmt.Fprintln(w, "  gh org-clone [flags] <org>")
-	fmt.Fprintln(w, "  gh org-clone sync [flags] [<org>[/<repo>]]")
-	fmt.Fprintln(w, "  gh org-clone clone [flags] <org>/<repo>...")
-	fmt.Fprintln(w, "  gh org-clone untrack [flags] <org>/<repo>")
-	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]")
-	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree list [flags] [<org>/<repo>|<org>]")
+	fmt.Fprintln(w, "  gh workspace [flags] <org>")
+	fmt.Fprintln(w, "  gh workspace sync [flags] [<org>[/<repo>]]")
+	fmt.Fprintln(w, "  gh workspace clone [flags] <org>/<repo>...")
+	fmt.Fprintln(w, "  gh workspace untrack [flags] <org>/<repo>")
+	fmt.Fprintln(w, "  gh workspace worktree add [flags] <org>/<repo> <branch> [path]")
+	fmt.Fprintln(w, "  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
+	fmt.Fprintln(w, "  gh workspace worktree list [flags] [<org>/<repo>|<org>]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run \"gh org-clone worktree <command> --help\" for a worktree command's flags.")
+	fmt.Fprintln(w, "Run \"gh workspace worktree <command> --help\" for a worktree command's flags.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "FLAGS")
 	printFlagTable(w, usageFlags(defaultConfig()))
@@ -420,7 +420,7 @@ func newFlagSet(name string) (*pflag.FlagSet, *bool) {
 // intentional difference -- see AIDEV.md.
 func resolveConfig(args []string, stderr io.Writer) (config, *fileConfig, error) {
 	var configPath string
-	fs, help := newFlagSet("gh-org-clone")
+	fs, help := newFlagSet("gh-workspace")
 	bound := bindSettings(fs, cmdSync)
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 

@@ -1,4 +1,4 @@
-// This file is the "gh org-clone sync" subcommand: the explicit form of
+// This file is the "gh workspace sync" subcommand: the explicit form of
 // the bare top-level entry point (main.go's runSingleOwnerSync, which this
 // file's single-owner path also calls), plus three things main.go's bare
 // form cannot express at all: a bare workspace-wide sync (every configured
@@ -20,22 +20,22 @@ import (
 	"syscall"
 
 	"github.com/spf13/pflag"
-	"github.com/swanysimon/gh-org-clone/internal/engine"
-	"github.com/swanysimon/gh-org-clone/internal/ghcli"
-	"github.com/swanysimon/gh-org-clone/internal/plan"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/ghcli"
+	"github.com/swanysimon/gh-workspace/internal/plan"
+	"github.com/swanysimon/gh-workspace/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
-// runSync is "gh org-clone sync [flags] [<org>[/<repo>]]"'s dispatch.
+// runSync is "gh workspace sync [flags] [<org>[/<repo>]]"'s dispatch.
 // Named runSync, not cmdSync like every other subcommand's dispatch
 // function (cmdWorktreeAdd, cmdClone, cmdUntrack), to avoid colliding with
 // the pre-existing cmdSync commandID constant -- see settings.go's doc
 // comment on cmdIDClone for the same kind of collision, resolved the
 // other way there.
 func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone sync [flags] [<org>[/<repo>]]"
-	fs, help := newSubcommandFlagSet("gh org-clone sync", usage, stderr)
+	const usage = "gh workspace sync [flags] [<org>[/<repo>]]"
+	fs, help := newSubcommandFlagSet("gh workspace sync", usage, stderr)
 	cfg, fc, positional, err := resolveSyncConfig(fs, help, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
@@ -119,11 +119,11 @@ func runSingleRepoSync(ctx context.Context, cfg config, owner, repoName string, 
 		return exitUsage
 	}
 	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 
@@ -212,11 +212,11 @@ type ownerWorkPlan struct {
 // cfg.Root, with no listing for any of them regardless of configuration).
 func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictOwners []string, stdout, stderr io.Writer) int {
 	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 

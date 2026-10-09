@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/execx"
 )
 
 // JSONFields must stay in sync with the fields Repo decodes. --limit is

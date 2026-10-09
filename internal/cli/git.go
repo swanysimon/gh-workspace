@@ -3,9 +3,9 @@ package cli
 import (
 	"context"
 
-	"github.com/swanysimon/gh-org-clone/internal/engine"
-	"github.com/swanysimon/gh-org-clone/internal/execx"
-	"github.com/swanysimon/gh-org-clone/internal/gitcli"
+	"github.com/swanysimon/gh-workspace/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/gitcli"
 )
 
 // execCommand delegates to internal/execx.Run, which is now the one real

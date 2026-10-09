@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
 // Settings holds every value this package resolves.
@@ -67,13 +67,13 @@ func Default() Settings {
 
 func DefaultRoot() string {
 	if xdg := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(xdg) {
-		return filepath.Join(xdg, "gh-org-clone")
+		return filepath.Join(xdg, "gh-workspace")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	return filepath.Join(home, ".local", "share", "gh-org-clone")
+	return filepath.Join(home, ".local", "share", "gh-workspace")
 }
 
 // Validate checks every field Settings owns. It does not check an owner/org
@@ -187,17 +187,17 @@ func ResolveConfigPath(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	if env := os.Getenv("GH_ORG_CLONE_CONFIG"); env != "" {
+	if env := os.Getenv("GH_WORKSPACE_CONFIG"); env != "" {
 		return env
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
-		return filepath.Join(xdg, "gh-org-clone", "config.json")
+		return filepath.Join(xdg, "gh-workspace", "config.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	return filepath.Join(home, ".config", "gh-org-clone", "config.json")
+	return filepath.Join(home, ".config", "gh-workspace", "config.json")
 }
 
 // LoadFileConfig returns nil, nil when the file does not exist. Any other
@@ -369,8 +369,8 @@ func parseEnvBool(v string) (any, error) {
 	return b, nil
 }
 
-// settingsTable is every setting gh-org-clone resolves, in the order they
-// appear in --help. --config itself (and its GH_ORG_CLONE_CONFIG env var)
+// settingsTable is every setting gh-workspace resolves, in the order they
+// appear in --help. --config itself (and its GH_WORKSPACE_CONFIG env var)
 // is deliberately not here: it names which file to load, so it can't be a
 // value *within* that file, and it has its own special-cased handling in
 // the caller (identical to before this table existed). --help is likewise
@@ -378,7 +378,7 @@ func parseEnvBool(v string) (any, error) {
 var settingsTable = []Setting{
 	{
 		flagName: "root", kind: kindString, usage: "root directory for cloned orgs",
-		envVar: "GH_ORG_CLONE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
+		envVar: "GH_WORKSPACE_ROOT", configKey: "root", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Root == nil {
 				return nil, false, nil
@@ -390,7 +390,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "concurrency", kind: kindInt, usage: "number of repos to sync in parallel",
-		envVar: "GH_ORG_CLONE_CONCURRENCY", configKey: "concurrency", commands: inCmd(CmdSync),
+		envVar: "GH_WORKSPACE_CONCURRENCY", configKey: "concurrency", commands: inCmd(CmdSync),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Concurrency == nil {
 				return nil, false, nil
@@ -402,7 +402,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "timeout", kind: kindDuration, usage: "per-subprocess timeout",
-		envVar: "GH_ORG_CLONE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
+		envVar: "GH_WORKSPACE_TIMEOUT", configKey: "timeout", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Timeout == nil {
 				return nil, false, nil
@@ -424,7 +424,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "max-repos", kind: kindInt, usage: "maximum repos to list from the org (gh --limit)",
-		envVar: "GH_ORG_CLONE_MAX_REPOS", configKey: "maxRepos", commands: inCmd(CmdSync),
+		envVar: "GH_WORKSPACE_MAX_REPOS", configKey: "maxRepos", commands: inCmd(CmdSync),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.MaxRepos == nil {
 				return nil, false, nil
@@ -436,7 +436,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "protocol", kind: kindString, usage: "clone protocol: ssh or https",
-		envVar: "GH_ORG_CLONE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
+		envVar: "GH_WORKSPACE_PROTOCOL", configKey: "protocol", commands: inCmd(CmdSync, CmdWorktree, CmdClone, CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Protocol == nil {
 				return nil, false, nil
@@ -448,7 +448,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "include-forks", kind: kindBool, usage: "include forked repos",
-		envVar: "GH_ORG_CLONE_INCLUDE_FORKS", configKey: "includeForks", commands: inCmd(CmdSync),
+		envVar: "GH_WORKSPACE_INCLUDE_FORKS", configKey: "includeForks", commands: inCmd(CmdSync),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.IncludeForks == nil {
 				return nil, false, nil
@@ -460,7 +460,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "archive", kind: kindBool, usage: "tarball archived repos and remove their clones",
-		envVar: "GH_ORG_CLONE_ARCHIVE", configKey: "archive", commands: inCmd(CmdSync, CmdClone),
+		envVar: "GH_WORKSPACE_ARCHIVE", configKey: "archive", commands: inCmd(CmdSync, CmdClone),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.Archive == nil {
 				return nil, false, nil
@@ -497,7 +497,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "worktree-root", kind: kindString, usage: "root directory new worktrees are placed under (default: the current directory)",
-		envVar: "GH_ORG_CLONE_WORKTREE_ROOT", configKey: "worktreeRoot", commands: inCmd(CmdWorktreeAdd),
+		envVar: "GH_WORKSPACE_WORKTREE_ROOT", configKey: "worktreeRoot", commands: inCmd(CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.WorktreeRoot == nil {
 				return nil, false, nil
@@ -508,7 +508,7 @@ var settingsTable = []Setting{
 	},
 	{
 		flagName: "worktree-path", kind: kindString, usage: "worktree path template under worktree-root ({owner}, {repo}, {branch})",
-		envVar: "GH_ORG_CLONE_WORKTREE_PATH", configKey: "worktreePath", commands: inCmd(CmdWorktreeAdd),
+		envVar: "GH_WORKSPACE_WORKTREE_PATH", configKey: "worktreePath", commands: inCmd(CmdWorktreeAdd),
 		fileValue: func(fc *FileConfig) (any, bool, error) {
 			if fc.WorktreePath == nil {
 				return nil, false, nil

@@ -13,11 +13,11 @@ import (
 	"syscall"
 
 	"github.com/spf13/pflag"
-	"github.com/swanysimon/gh-org-clone/internal/engine"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
-// runWorktree dispatches the "gh org-clone worktree <verb>" subcommands. It
+// runWorktree dispatches the "gh workspace worktree <verb>" subcommands. It
 // is a thin wrapper around "git worktree": this tool only resolves the
 // <org>/<repo> argument to a clone path (cloning it first if needed) and
 // guards the one destructive interaction with archiving; git does
@@ -49,9 +49,9 @@ func runWorktree(ctx context.Context, args []string, stdout, stderr io.Writer) i
 
 func printWorktreeUsage(w io.Writer) {
 	fmt.Fprintln(w, "USAGE")
-	fmt.Fprintln(w, "  gh org-clone worktree add [flags] <org>/<repo> <branch> [path]")
-	fmt.Fprintln(w, "  gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
-	fmt.Fprintln(w, "  gh org-clone worktree list [flags] [<org>/<repo>|<org>]")
+	fmt.Fprintln(w, "  gh workspace worktree add [flags] <org>/<repo> <branch> [path]")
+	fmt.Fprintln(w, "  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
+	fmt.Fprintln(w, "  gh workspace worktree list [flags] [<org>/<repo>|<org>]")
 }
 
 // newSubcommandFlagSet makes a subcommand's flag set whose -h/--help
@@ -78,19 +78,22 @@ func newSubcommandFlagSet(name, usage string, stderr io.Writer) (*pflag.FlagSet,
 // for the caller to fill in once it has parsed <org>/<repo> out of the
 // positional args. help is the pointer newSubcommandFlagSet returned; the
 // caller must have added every other flag it wants (e.g. --force) to fs
-// before calling this, since it parses fs itself.
-func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args []string) (config, []string, error) {
+// before calling this, since it parses fs itself. The returned *fileConfig
+// is nil only on error; a caller that needs to check whether the config's
+// own owners/repos lists track a repo (e.g. cmdUntrack) reads it directly
+// rather than this function re-deriving that check for every caller.
+func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args []string) (config, *fileConfig, []string, error) {
 	var configPath string
 	bound := bindSettings(fs, cmd)
 	fs.StringVar(&configPath, "config", "", "path to a JSON config file")
 
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
-		return config{}, nil, err
+		return config{}, nil, nil, err
 	}
 	if *help {
 		fs.Usage()
-		return config{}, nil, errHelpRequested
+		return config{}, nil, nil, errHelpRequested
 	}
 	positional := fs.Args()
 
@@ -98,20 +101,20 @@ func resolveSubcommandConfig(fs *pflag.FlagSet, help *bool, cmd commandID, args 
 
 	fc, err := loadFileConfig(resolveConfigPath(configPath))
 	if err != nil {
-		return config{}, nil, err
+		return config{}, nil, nil, err
 	}
 	if err := resolveSettings(&cfg, cmd, fs, bound, fc); err != nil {
-		return config{}, nil, err
+		return config{}, nil, nil, err
 	}
 	if err := expandConfigPaths(&cfg); err != nil {
-		return config{}, nil, err
+		return config{}, nil, nil, err
 	}
 
 	if err := settings.Validate(cfg.Settings); err != nil {
-		return config{}, nil, err
+		return config{}, nil, nil, err
 	}
 
-	return cfg, positional, nil
+	return cfg, fc, positional, nil
 }
 
 // parseOwnerRepo splits "<org>/<repo>" and validates both halves against
@@ -134,9 +137,9 @@ func parseOwnerRepo(s string) (owner, repo string, err error) {
 }
 
 func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree add [flags] <org>/<repo> <branch> [path]"
-	fs, help := newSubcommandFlagSet("gh org-clone worktree add", usage, stderr)
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdIDWorktreeAdd, args)
+	const usage = "gh workspace worktree add [flags] <org>/<repo> <branch> [path]"
+	fs, help := newSubcommandFlagSet("gh workspace worktree add", usage, stderr)
+	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdIDWorktreeAdd, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -174,11 +177,11 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 
 	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 
@@ -333,11 +336,11 @@ func ensureClonedForWorktree(ctx context.Context, cfg config, repo ghRepo, stder
 }
 
 func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree remove [--force] [flags] <org>/<repo> <path> | <path>"
-	fs, help := newSubcommandFlagSet("gh org-clone worktree remove", usage, stderr)
+	const usage = "gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>"
+	fs, help := newSubcommandFlagSet("gh workspace worktree remove", usage, stderr)
 	var force bool
 	fs.BoolVar(&force, "force", false, "remove even if the worktree has uncommitted changes")
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
+	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -351,7 +354,7 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 
@@ -407,9 +410,9 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 }
 
 func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone worktree list [flags] [<org>/<repo>|<org>]"
-	fs, help := newSubcommandFlagSet("gh org-clone worktree list", usage, stderr)
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
+	const usage = "gh workspace worktree list [flags] [<org>/<repo>|<org>]"
+	fs, help := newSubcommandFlagSet("gh workspace worktree list", usage, stderr)
+	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -423,7 +426,7 @@ func cmdWorktreeList(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 

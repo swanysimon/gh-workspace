@@ -1,4 +1,4 @@
-module github.com/swanysimon/gh-org-clone
+module github.com/swanysimon/gh-workspace
 
 go 1.27
 

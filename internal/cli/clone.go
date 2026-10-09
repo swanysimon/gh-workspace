@@ -9,17 +9,17 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/engine"
 )
 
 func printCloneUsage(w io.Writer) {
 	fmt.Fprintln(w, "USAGE")
-	fmt.Fprintln(w, "  gh org-clone clone [flags] <org>/<repo>...")
+	fmt.Fprintln(w, "  gh workspace clone [flags] <org>/<repo>...")
 }
 
 func printUntrackUsage(w io.Writer) {
 	fmt.Fprintln(w, "USAGE")
-	fmt.Fprintln(w, "  gh org-clone untrack [flags] <org>/<repo>")
+	fmt.Fprintln(w, "  gh workspace untrack [flags] <org>/<repo>")
 }
 
 // cmdClone implements `clone <org>/<repo>...`: an explicit, single-repo
@@ -31,9 +31,9 @@ func printUntrackUsage(w io.Writer) {
 // argument doesn't stop the rest from being processed. Every repo named
 // here is recorded Tracked: true.
 func cmdClone(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone clone [flags] <org>/<repo>..."
-	fs, help := newSubcommandFlagSet("gh org-clone clone", usage, stderr)
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdIDClone, args)
+	const usage = "gh workspace clone [flags] <org>/<repo>..."
+	fs, help := newSubcommandFlagSet("gh workspace clone", usage, stderr)
+	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdIDClone, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -47,11 +47,11 @@ func cmdClone(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	if _, err := exec.LookPath("gh"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires the gh CLI on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires the gh CLI on PATH:", err)
 		return exitRuntimeFail
 	}
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(stderr, "gh-org-clone requires git on PATH:", err)
+		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
 	}
 
@@ -111,15 +111,37 @@ func cloneOne(ctx context.Context, cfg config, owner, repoName string, stdout, s
 	return nil
 }
 
+// configTracks reports whether the config file itself still tracks
+// owner/repoName, either via its owner directly or via that exact repo in
+// "repos", naming which so cmdUntrack can point at the entry to edit.
+func configTracks(fc *fileConfig, owner, repoName string) (reason string, tracked bool) {
+	if fc == nil {
+		return "", false
+	}
+	for _, oc := range fc.Owners {
+		if oc.Name == owner {
+			return fmt.Sprintf("owners: %q", owner), true
+		}
+	}
+	for _, r := range fc.Repos {
+		if r == owner+"/"+repoName {
+			return fmt.Sprintf("repos: %q", r), true
+		}
+	}
+	return "", false
+}
+
 // cmdUntrack implements `untrack <org>/<repo>`: clears a repo's explicit
 // Tracked bit without touching any local data. It is the only command in
 // this tool that can make a repo *less* tracked, and it still never
 // deletes anything -- the clone or archive, if either exists, is left
-// exactly where it is.
+// exactly where it is. It refuses if the config's own owners/repos lists
+// still track the repo (see configTracks), naming the entry to edit,
+// rather than silently clearing a bit the next sync would just set again.
 func cmdUntrack(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "gh org-clone untrack [flags] <org>/<repo>"
-	fs, help := newSubcommandFlagSet("gh org-clone untrack", usage, stderr)
-	cfg, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
+	const usage = "gh workspace untrack [flags] <org>/<repo>"
+	fs, help := newSubcommandFlagSet("gh workspace untrack", usage, stderr)
+	cfg, fc, rest, err := resolveSubcommandConfig(fs, help, cmdWorktree, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -156,11 +178,11 @@ func cmdUntrack(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return exitSuccess
 	}
 
-	// AIDEV: once the config's owners/repos lists exist (the next Phase 3
-	// step), untrack must fail here instead -- naming the config entry to
-	// edit -- if the config still tracks this repo, rather than silently
-	// clearing a bit the next sync would just set again. The config shape
-	// doesn't exist yet, so that check isn't implemented yet either.
+	if reason, tracked := configTracks(fc, owner, repoName); tracked {
+		fmt.Fprintf(stderr, "%s/%s is still tracked by the config (%s); edit the config to stop tracking it\n", owner, repoName, reason)
+		return exitRuntimeFail
+	}
+
 	rs.Tracked = false
 	st.Repos[repoName] = rs
 	st.UpdatedAt = time.Now()

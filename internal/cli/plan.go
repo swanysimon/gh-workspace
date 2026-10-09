@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/swanysimon/gh-org-clone/internal/plan"
+import "github.com/swanysimon/gh-workspace/internal/plan"
 
 // action and the actionX constants are aliases for plan.Action/plan's
 // constants, so every existing comparison and switch case elsewhere in the

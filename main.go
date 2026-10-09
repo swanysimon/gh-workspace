@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/swanysimon/gh-org-clone/internal/cli"
+	"github.com/swanysimon/gh-workspace/internal/cli"
 )
 
 func main() {

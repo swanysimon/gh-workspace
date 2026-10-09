@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/execx"
 )
 
 // Tag is one entry from Tags, in the shape an archive manifest records.
