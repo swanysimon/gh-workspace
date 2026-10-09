@@ -230,7 +230,10 @@ an org named `worktree`.
 - [x] **Library reuse: `internal/` for now.** No second consumer exists.
       Moving a package out of `internal/` later is mechanical, while
       un-publishing an API is not.
-- [ ] Start Phase 1 with `jj new`.
+- [x] Start Phase 1 with `jj new`. Stale checkbox, never checked off at
+      the time -- Phase 1 through Phase 5 have all since happened, so this
+      obviously occurred; checked off now rather than left looking
+      outstanding.
 
 ## Phase 1 — Seams and settings, still in `package main`
 
@@ -1680,18 +1683,29 @@ Each bullet group is its own jj change.
     squash --from`) out of the Phase 4 rename commit and into this
     phase's own commit, since finding it was this phase's work, not
     Phase 4's.
-  - **Minor finding, deliberately not fixed yet**: a migration or
-    corruption notice from `loadState` prints **twice** for the same
+  - **Minor finding, fixed in a follow-up pass**: a migration or
+    corruption notice from `loadState` printed **twice** for the same
     owner during a workspace-wide sync (observed during the v1-migration
-    scenario above). Cause: `runWorkspaceSync` calls `loadState` once per
+    scenario above). Cause: `runWorkspaceSync` called `loadState` once per
     discovered owner while building `explicitByOwner` (to find already-
-    `Tracked` repos), then calls it again per owner while building that
+    `Tracked` repos), then called it again per owner while building that
     owner's `ownerWorkPlan` -- two real reads of the same file for any
     owner that's both discovered and in the final owner set, which is the
     common case. Purely cosmetic (no double migration write, no data
-    issue -- `SaveState` still only runs once), but real duplicate output.
-    Not fixed here: flagged for a decision (fix now vs. defer) rather than
-    silently fixed or silently ignored.
+    issue -- `SaveState` still only ran once), but real duplicate output.
+    First flagged here as a deferred decision rather than silently fixed
+    or silently ignored; fixed shortly after, once asked to close out
+    every non-tag item. Fix: `runWorkspaceSync` now caches each
+    discovered owner's loaded `store.State` in a map and reuses it in the
+    per-owner planning loop instead of calling `loadState` again for an
+    owner already loaded; an owner not in that map (new, never
+    discovered) still loads fresh. `TestRunSyncWorkspacePrintsMigrationNoticeOnce`
+    pins it (a real v1 state file, one configured+discovered owner,
+    asserts the notice appears exactly once); verified it actually
+    catches the regression by reverting the fix in a scratch copy and
+    watching it fail with the exact duplicate text before trusting it.
+    `go build`/`vet`/`gofmt`/`test -race -count=1` clean on every package
+    afterward.
 - [ ] Tag, then confirm the precompiled binaries publish and
       `gh extension install swanysimon/gh-workspace` works from clean.
       Not done: tagging triggers a push and a real release workflow run,

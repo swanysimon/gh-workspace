@@ -243,8 +243,15 @@ func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictO
 			}
 		}
 	}
+	// Cached so the per-owner planning loop below doesn't load the same
+	// file a second time for any owner that's both discovered here and in
+	// the final owner set (the common case) -- loadState's own migration/
+	// corruption notices would otherwise print twice for the same file,
+	// found by manual smoke testing a v1-state migration.
+	discoveredStates := map[string]store.State{}
 	for _, owner := range discoverExplicitOwners(cfg.Root) {
 		st := loadState(store.StatePath(cfg.Root, owner), owner, stderr)
+		discoveredStates[owner] = st
 		for name, rs := range st.Repos {
 			if rs.Tracked {
 				addExplicit(owner, name)
@@ -302,7 +309,10 @@ func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictO
 		ownerCfg.Owner = owner
 		ownerCfg.Settings = ownerSettings
 		env := buildEnv(ownerCfg)
-		st := loadState(store.StatePath(cfg.Root, owner), owner, stderr)
+		st, ok := discoveredStates[owner]
+		if !ok {
+			st = loadState(store.StatePath(cfg.Root, owner), owner, stderr)
+		}
 
 		plan := ownerWorkPlan{owner: owner, env: env, state: st}
 

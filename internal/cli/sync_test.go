@@ -554,3 +554,54 @@ func TestRunSyncWorkspaceNoOpCostsExactlyOneGhCallPerOwnerOrBatch(t *testing.T) 
 		t.Fatalf("git was called %d times on a no-op run, want 0", got)
 	}
 }
+
+// TestRunSyncWorkspacePrintsMigrationNoticeOnce is a real bug found by
+// manual smoke testing: a configured owner that's also discovered on disk
+// (the common case -- any owner that's ever been synced before) had its
+// state.json loaded twice by runWorkspaceSync, once to scan for explicitly
+// tracked repos and once to build its own plan. For a v1 file, that meant
+// loadState's migration notice printed twice for the same file in the same
+// run, even though the migration itself only happened once in memory and
+// state.json was only ever saved once.
+func TestRunSyncWorkspacePrintsMigrationNoticeOnce(t *testing.T) {
+	origin := initTestRepo(t)
+	pushedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	fake := newFakeGhForSync()
+	fake.listingsByOwner["myorg"] = repoListJSON(t, []ghRepo{
+		{ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1", URL: "file://" + origin, SSHURL: "file://" + origin, DefaultBranch: &ghRefName{Name: "main"}, PushedAt: pushedAt},
+	})
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = fake.exec
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "myorg"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	v1 := `{
+		"version": 1,
+		"org": "myorg",
+		"updatedAt": "2026-01-01T00:00:00Z",
+		"repos": {
+			"repo1": {"id": "R1", "pushedAt": "2026-01-01T00:00:00Z", "syncedAt": "2026-01-01T00:00:00Z", "status": "cloned"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(root, "myorg", "state.json"), []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{"owners":[{"name":"myorg"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"sync", "--root", root, "--protocol", "https", "--config", configFile}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
+	}
+
+	if got := strings.Count(stderr.String(), "migrated state file"); got != 1 {
+		t.Fatalf("migration notice printed %d times, want exactly 1; stderr=%q", got, stderr.String())
+	}
+}
