@@ -910,15 +910,13 @@ step, whose user-visible differences are deliberate and recorded.
     printed string verified unchanged by grep and by a hand-built binary,
     full pinned-test suite passing) had already passed on the first
     attempt. Re-verified clean on a second review pass after the fix.
-- [ ] CI green. Not yet checked against the real GitHub Actions workflow
-      (`.github/workflows/ci.yml`): everything in this phase has been local
-      jj commits, nothing pushed. Every local signal CI would actually run
-      (`gofmt -l .`, `go vet ./...`, `go test -race -count=1 ./...`) is
-      clean on every commit in this phase, on both the final state and
-      (per each step's own verification) along the way — but a real CI run
-      on both `ubuntu-latest` and `macos-latest` (the workflow's matrix)
-      hasn't happened yet. Needs a push to a branch/PR before this can be
-      checked off for real.
+- [x] CI green. Confirmed via `gh run list`: the `ci` workflow run for
+      `fda0ee2` ("feat(worktree): configured worktree placement", the tip of
+      `main`, already pushed to `origin/main`) completed `success` on both
+      `ubuntu-latest` and `macos-latest`. Every commit in this phase landed
+      directly on `main` (no branch/PR was used), so this is the real
+      workflow run, not just the local `gofmt`/`vet`/`test -race` signal
+      each step already checked along the way.
 
 ## Phase 3 — Workspace model (still shipped as gh-org-clone)
 
@@ -1554,21 +1552,23 @@ Each bullet group is its own jj change.
       `gh extension install swanysimon/gh-workspace` works from clean.
 - [ ] Do the manual migration steps from Phase 4 on my own machine.
 
-## Open questions
+## Open questions (resolved)
 
-- [ ] Should `archive` ever be a manual verb? Leaning no: archiving means
-      "archived upstream," not a local choice.
-- [ ] Worktree metadata: rely purely on `git worktree list` (current
-      approach, no extra state), or record worktrees in state for faster
-      workspace-wide listing and `status`? Leaning git-only until `status`
-      proves it's too slow.
-- [ ] jj workspaces. `jj workspace add` is jj's version of a git
-      worktree, and the maintainer uses jj. Should `worktree add` support
-      jj-colocated clones (e.g. `--vcs jj`, or detecting `.jj` in the
-      central clone)? That affects the archive-with-worktrees check too,
-      since jj workspaces don't appear in `git worktree list`. Out of scope
-      for this plan, but the `gitcli` worktree helpers should sit behind a
-      small interface so a jj implementation can be added later.
-- [ ] Multiple workspaces (e.g. work vs personal): is `--config` / `--root`
-      enough, or do we want named workspaces (`--workspace work`)? Out of
-      scope unless it falls out naturally from the settings table.
+- [x] `archive` is **never** a manual verb. Archiving only happens as a
+      consequence of syncing a repo that's archived upstream; there is no
+      command to force-archive a repo locally. No code change needed (no
+      such command exists today) — this just closes the question.
+- [x] Worktree metadata stays **git-only**: no extra state tracking.
+      `status` isn't built yet (it's still the optional, later command in
+      the table above), so there's nothing concrete to speed up — adding
+      state ahead of that need would be an unrequested abstraction.
+      Revisit only once `status` exists and is shown to need it.
+- [x] jj-colocated worktrees (`jj workspace add` support) stay **out of
+      scope**. Real use case (the maintainer uses jj), but still only one
+      consumer — no interface seam added to `gitcli`'s worktree helpers
+      ahead of that work actually starting (YAGNI; an unused interface is
+      exactly the kind of unrequested abstraction the gates rule out). Add
+      the seam when this is actually built, not before.
+- [x] Named workspaces (`--workspace work`) stay **out of scope**.
+      `--config`/`--root` already cover switching between configs; nothing
+      in this plan needs more than that.
