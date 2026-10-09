@@ -1706,11 +1706,21 @@ Each bullet group is its own jj change.
     watching it fail with the exact duplicate text before trusting it.
     `go build`/`vet`/`gofmt`/`test -race -count=1` clean on every package
     afterward.
-- [ ] Tag, then confirm the precompiled binaries publish and
-      `gh extension install swanysimon/gh-workspace` works from clean.
-      Not done: tagging triggers a push and a real release workflow run,
-      a visible action held for explicit go-ahead same as the CI-push
-      item above.
+- [x] Tagged `v0.1.0` (lightweight, matching the existing v0.0.1/v0.0.2
+      style) on `main` at `bc3dca3` and pushed it -- a minor version bump
+      given the significant changes in this round (workspace model,
+      rename, the lock-leak/race fix), asked for and confirmed explicitly
+      before pushing, same as every other push this session. The `release`
+      workflow (`cli/gh-extension-precompile`) ran successfully and
+      published `gh-workspace 0.1.0` with all twelve platform binaries
+      attached; its annotations (`Cannot open: File exists`, a tar
+      restore failure) are non-fatal actions-cache noise, confirmed by
+      the job's own conclusion being success and the release actually
+      publishing correctly. Verified `gh extension install
+      swanysimon/gh-workspace` from a clean `gh extension list` (empty)
+      actually works end to end: installs `v0.1.0`, and `gh workspace
+      --help` runs correctly as the real extension, not just the local
+      build.
 - [x] Do the manual migration steps from Phase 4 on my own machine --
       already confirmed done (nothing to migrate) in Phase 4's own entry
       above.
