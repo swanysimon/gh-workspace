@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/archive"
-	"github.com/swanysimon/gh-org-clone/internal/execx"
-	"github.com/swanysimon/gh-org-clone/internal/ghcli"
-	"github.com/swanysimon/gh-org-clone/internal/plan"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/archive"
+	"github.com/swanysimon/gh-workspace/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/ghcli"
+	"github.com/swanysimon/gh-workspace/internal/plan"
+	"github.com/swanysimon/gh-workspace/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
 var errFakeFailure = errors.New("fake failure")
@@ -495,6 +495,48 @@ func TestMultiOwnerRunSavesEachOwnerIndependently(t *testing.T) {
 	}
 	if !releasedA || !releasedB {
 		t.Fatalf("both owners should have had Release called: a=%v b=%v", releasedA, releasedB)
+	}
+}
+
+// TestMultiOwnerRunReleasesOwnersWithNoTasks pins a real bug found by manual
+// smoke testing: an owner with zero tasks (e.g. under --tracked-only, when
+// that owner has nothing explicitly tracked outside its own skipped
+// listing) must still have its state saved and its lock released, even
+// though it never produces a Result for the remaining-count loop to
+// decrement.
+func TestMultiOwnerRunReleasesOwnersWithNoTasks(t *testing.T) {
+	root := t.TempDir()
+	env := testEnv(t)
+	env.Owner = "owner-empty"
+	env.Settings.Root = root
+
+	var released bool
+	saveErr := os.MkdirAll(env.ReposDir(), 0o700)
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	owners := []OwnerWork{
+		{
+			Owner:   "owner-empty",
+			Env:     env,
+			Tasks:   nil,
+			State:   store.State{Repos: map[string]store.RepoState{}},
+			Release: func() { released = true },
+		},
+	}
+
+	outcomes := MultiOwnerRun(context.Background(), 2, owners, os.Stderr)
+	if len(outcomes) != 1 {
+		t.Fatalf("got %d outcomes, want 1", len(outcomes))
+	}
+	if outcomes[0].SaveErr != nil {
+		t.Fatalf("SaveErr = %v, want nil", outcomes[0].SaveErr)
+	}
+	if !released {
+		t.Fatal("Release was never called for a zero-task owner")
+	}
+	if _, err := os.Stat(env.StatePath()); err != nil {
+		t.Fatalf("state.json should have been written: %v", err)
 	}
 }
 

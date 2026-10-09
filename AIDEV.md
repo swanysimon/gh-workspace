@@ -1592,27 +1592,106 @@ Each bullet group is its own jj change.
 
 ## Phase 5 — Release
 
-- [ ] jj: `jj new -m "chore: release prep"` (only if changes are needed).
-- [ ] CI green on Linux and macOS.
-- [ ] Manual smoke test on a scratch root:
-  - [ ] fresh `sync` of an owner, then a second no-op run
-  - [ ] `clone` of a repo outside any configured owner
-  - [ ] `sync --tracked-only`
-  - [ ] `worktree add` with no path and no config (lands under the current
-        directory as `<repo>`)
-  - [ ] `worktree add` with a configured template and no path
-  - [ ] path-only `worktree remove`
-  - [ ] archive of a repo with a live worktree (the prompt fires; the
-        non-TTY run refuses)
-  - [ ] v1 state migration from a real old root
-  - [ ] two-owner `sync` while the other owner's lock is held (one
-        skipped, exit `1`, the other owner's state saved)
-  - [ ] an explicitly tracked repo that was deleted or made inaccessible
-        (reported, nothing removed)
-  - [ ] `~/` paths in the config file
+- [x] jj: `jj new -m "chore: release prep"`.
+- [ ] CI green on Linux and macOS. Not yet checked for this phase's own
+      commits specifically (the engine fix below, and the Phase 4 rename) --
+      neither has been pushed yet. Holding on a push until asked: it's a
+      visible, shared-state action, unlike everything else in this phase.
+- [x] Manual smoke test on a scratch root. Built the real binary and drove
+      it against a self-contained local harness rather than the real
+      GitHub API: a fake `gh` (a small Python script on `PATH` ahead of the
+      real one, reading a JSON "world" file for `repo list`/`repo
+      view`/`api graphql`) plus real local bare git repos as upstreams
+      (`file://` URLs), matching this file's own established precedent for
+      manual smoke tests ("fake `gh` on PATH, real `git`"). All eleven
+      scenarios below passed (after one real bug, found here and fixed --
+      see below):
+  - [x] fresh `sync` of an owner, then a second no-op run -- first run
+        cloned/archived correctly; second run: 0 git/network work, all
+        skipped.
+  - [x] `clone` of a repo outside any configured owner -- tracked and
+        cloned, state entry correct.
+  - [x] `sync --tracked-only` -- skipped both configured owners' listings;
+        only the one explicitly-tracked repo got the batched refresh.
+  - [x] `worktree add` with no path and no config -- landed at
+        `<cwd>/<repo>`, branch created from `origin/<default>`.
+  - [x] `worktree add` with a configured template and no path --
+        `{owner}/{repo}/{branch}` template applied, `/` in the branch
+        sanitized to `-`.
+  - [x] path-only `worktree remove` -- found the owning repo via the
+        worktree's `.git` file and removed it.
+  - [x] archive of a repo with a live worktree -- non-TTY run refused
+        cleanly (nothing touched); `--yes` then removed the worktree and
+        archived as normal.
+  - [x] v1 state migration from a real old root -- migrated to v2 in
+        place, `Tracked: true` carried forward, pre-existing local clone
+        correctly fetched (not re-cloned).
+  - [x] two-owner `sync` while the other owner's lock is held -- the
+        locked owner reported and skipped, every other owner (including
+        one only discovered via on-disk state, not configured) still
+        synced and saved, exit `1`.
+  - [x] an explicitly tracked repo that was deleted or made inaccessible --
+        the batched lookup came back null, a warning was printed, the
+        local clone was left exactly in place, exit `0` (a report, not a
+        failure).
+  - [x] `~/` paths in the config file -- both `root` and `worktreeRoot`
+        expanded correctly under a fake `$HOME`.
+  - **Real bug found and fixed**: `engine.MultiOwnerRun` never released an
+    owner's lock or saved its state if that owner had **zero** planned
+    tasks -- surfaced by the `sync --tracked-only` scenario, where a
+    configured owner with nothing explicitly tracked outside its own
+    (skipped) listing plans zero tasks. The release/save logic lived
+    entirely inside the per-result "`remaining[i]` reaches zero" branch of
+    the main result loop, which a zero-task owner's `remaining[i]`
+    (already `0` from the start) never reaches via that loop, since no
+    `Result` for it is ever produced to trigger the decrement. The lock
+    file leaked for the rest of the process, and every subsequent run
+    against that owner failed with "another gh-workspace run appears to
+    be in progress" until the stale lock was deleted by hand -- exactly
+    what happened when this scenario was run live. Fixed by finalizing
+    every zero-task owner (apply/save/release) in its own pass before the
+    result loop starts.
+    **First fix attempt introduced a real data race**, caught by
+    `go test -race`, not just reading the code: the pre-existing task-
+    sending goroutine did `for i, ow := range owners`, which copies each
+    full `OwnerWork` struct element (including `State`) even though it
+    only reads `ow.Tasks` -- racing against the new finalize pass's
+    concurrent write to `owners[i].State`. Fixed properly by having the
+    sender and worker goroutines read from precomputed, read-only
+    snapshots (`envs`, a flat `allTasks` slice) instead of indexing into
+    `owners` at all, so only the single main goroutine ever touches
+    `owners` after the pool starts.
+    `TestMultiOwnerRunReleasesOwnersWithNoTasks` pins the original bug
+    (asserts `Release` is called and `state.json` is written for a
+    zero-task owner); verified it actually catches the regression by
+    reverting the fix in a scratch copy and watching it fail, then
+    separately verified the race fix by running `go test -race` on the
+    unfixed-for-races version and watching it report the exact race
+    described above. `go build`/`vet`/`gofmt`/`test -race -count=1` clean
+    on every package afterward; the fix and its test were moved (`jj
+    squash --from`) out of the Phase 4 rename commit and into this
+    phase's own commit, since finding it was this phase's work, not
+    Phase 4's.
+  - **Minor finding, deliberately not fixed yet**: a migration or
+    corruption notice from `loadState` prints **twice** for the same
+    owner during a workspace-wide sync (observed during the v1-migration
+    scenario above). Cause: `runWorkspaceSync` calls `loadState` once per
+    discovered owner while building `explicitByOwner` (to find already-
+    `Tracked` repos), then calls it again per owner while building that
+    owner's `ownerWorkPlan` -- two real reads of the same file for any
+    owner that's both discovered and in the final owner set, which is the
+    common case. Purely cosmetic (no double migration write, no data
+    issue -- `SaveState` still only runs once), but real duplicate output.
+    Not fixed here: flagged for a decision (fix now vs. defer) rather than
+    silently fixed or silently ignored.
 - [ ] Tag, then confirm the precompiled binaries publish and
       `gh extension install swanysimon/gh-workspace` works from clean.
-- [ ] Do the manual migration steps from Phase 4 on my own machine.
+      Not done: tagging triggers a push and a real release workflow run,
+      a visible action held for explicit go-ahead same as the CI-push
+      item above.
+- [x] Do the manual migration steps from Phase 4 on my own machine --
+      already confirmed done (nothing to migrate) in Phase 4's own entry
+      above.
 
 ## Open questions (resolved)
 

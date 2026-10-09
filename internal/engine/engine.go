@@ -18,13 +18,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/swanysimon/gh-org-clone/internal/archive"
-	"github.com/swanysimon/gh-org-clone/internal/execx"
-	"github.com/swanysimon/gh-org-clone/internal/ghcli"
-	"github.com/swanysimon/gh-org-clone/internal/gitcli"
-	"github.com/swanysimon/gh-org-clone/internal/plan"
-	"github.com/swanysimon/gh-org-clone/internal/settings"
-	"github.com/swanysimon/gh-org-clone/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/archive"
+	"github.com/swanysimon/gh-workspace/internal/execx"
+	"github.com/swanysimon/gh-workspace/internal/ghcli"
+	"github.com/swanysimon/gh-workspace/internal/gitcli"
+	"github.com/swanysimon/gh-workspace/internal/plan"
+	"github.com/swanysimon/gh-workspace/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/store"
 )
 
 // Env is everything engine needs that isn't specific to one call: the
@@ -172,7 +172,7 @@ type Task struct {
 }
 
 // decidePrevState maps a store.RepoState's Status into plan.PrevState's two
-// independent bools -- the same mapping gh-org-clone's old root-level
+// independent bools -- the same mapping gh-workspace's old root-level
 // decide() shim did, now shared by BuildTasks (a full owner sync) and
 // SyncOne (a single resolved repo).
 func decidePrevState(prev store.RepoState, known bool) plan.PrevState {
@@ -414,14 +414,28 @@ func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr
 	totalActionable := 0
 	remaining := make([]int, len(owners))
 	tasksByOwnerName := make([]map[string]Task, len(owners))
+	// envs and allTasks are read-only snapshots the worker/sender
+	// goroutines use instead of indexing into owners directly: the main
+	// goroutine mutates owners[i].State (via applyResultsToState) as
+	// results come in and as zero-task owners are finalized below, and
+	// ranging over owners (as "for i, ow := range owners" used to, for
+	// both the sender and the old zero-task loop) copies each element's
+	// full struct -- including State -- which races with that mutation
+	// even though only Env/Tasks were ever read from the copy. Found by
+	// the race detector after the zero-task fix below was first added
+	// without this.
+	envs := make([]Env, len(owners))
+	var allTasks []routedTask
 	for i, ow := range owners {
 		remaining[i] = len(ow.Tasks)
+		envs[i] = ow.Env
 		byName := make(map[string]Task, len(ow.Tasks))
 		for _, t := range ow.Tasks {
 			byName[t.Repo.Name] = t
 			if t.Action != plan.Skip {
 				totalActionable++
 			}
+			allTasks = append(allTasks, routedTask{ownerIdx: i, task: t})
 		}
 		tasksByOwnerName[i] = byName
 	}
@@ -439,17 +453,15 @@ func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr
 		go func() {
 			defer wg.Done()
 			for rt := range taskCh {
-				res := processTask(ctx, owners[rt.ownerIdx].Env, rt.task, progress)
+				res := processTask(ctx, envs[rt.ownerIdx], rt.task, progress)
 				resultCh <- routedResult{ownerIdx: rt.ownerIdx, result: res}
 			}
 		}()
 	}
 
 	go func() {
-		for i, ow := range owners {
-			for _, t := range ow.Tasks {
-				taskCh <- routedTask{ownerIdx: i, task: t}
-			}
+		for _, rt := range allTasks {
+			taskCh <- rt
 		}
 		close(taskCh)
 	}()
@@ -463,6 +475,24 @@ func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr
 	for i, ow := range owners {
 		outcomes[i].Owner = ow.Owner
 	}
+
+	// An owner with zero tasks (e.g. a configured owner that has nothing
+	// explicitly tracked outside its own listing, under --tracked-only)
+	// never has remaining[i] decremented to zero by the result loop below
+	// -- it starts at zero and no result for that owner ever arrives to
+	// trigger the save-and-release path. Left unhandled, that owner's
+	// lock leaks for the rest of the process and its state is never
+	// saved. Finalize those owners here, before the result loop, instead.
+	for i := range owners {
+		if remaining[i] == 0 {
+			applyResultsToState(&owners[i].State, nil, tasksByOwnerName[i])
+			outcomes[i].SaveErr = store.SaveState(owners[i].Env.StatePath(), owners[i].State)
+			if owners[i].Release != nil {
+				owners[i].Release()
+			}
+		}
+	}
+
 	for rr := range resultCh {
 		i := rr.ownerIdx
 		outcomes[i].Results = append(outcomes[i].Results, rr.result)
