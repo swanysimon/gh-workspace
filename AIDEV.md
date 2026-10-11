@@ -1725,6 +1725,265 @@ Each bullet group is its own jj change.
       already confirmed done (nothing to migrate) in Phase 4's own entry
       above.
 
+## Phase 6 — Jujutsu
+
+Goal: a repo can be managed with jj instead of git — cloned with `jj git
+clone --colocate`, fetched with `jj git fetch`, and given working copies
+with `jj workspace add` — selected by an explicit `vcs` setting. Git stays
+the default, and nothing about a git-backed repo changes.
+
+This is the work the "jj-colocated worktrees stay out of scope" open
+question deferred: *"Add the seam when this is actually built, not
+before."* It is being built, so the seam gets added.
+
+### Decisions (resolved before any code)
+
+- [x] **How jj is chosen: an explicit `vcs` setting**, default `"git"`,
+      settable globally, per owner (`owners[].vcs`), and per repo (a
+      `repos[]` entry). Deliberately **not** auto-detected from `jj` being
+      on `PATH`: a tool that changes how it clones based on what happens
+      to be installed can't be turned off, and the first sync after an
+      upgrade would convert every existing clone on the machine.
+- [x] **Existing clones are detected per clone**, not per config: a `.jj`
+      directory means jj operations whatever the config says. A workspace
+      holding both kinds keeps working, and a `vcs` change never
+      invalidates what's already on disk.
+- [x] **`worktree add <repo> <branch>` on a jj clone is jj-idiomatic**:
+      `jj workspace add -r <revset>`, and **no bookmark is created**.
+      `<branch>` stays a required argument, selecting the starting
+      revision (and feeding the workspace name and the path template).
+      Creating a bookmark to mimic git's checked-out branch would be a
+      worse fit for how jj is actually used — you name a bookmark when you
+      push, not when you start. The command prints the exact `jj bookmark
+      create` line to run for that.
+- [x] **An existing git clone is converted on sync, but only when `vcs:
+      jj` is explicitly configured for it**: `jj git init --colocate` in
+      place, then track the default branch's remote bookmark. Never when
+      the clone is dirty — see the invariant below.
+- [x] **Scope is everything that mutates.** Read-only helpers
+      (`gitcli.HeadInfo`, `gitcli.Tags`, the archive manifest) stay
+      git-only, because a colocated clone keeps its git refs in sync.
+
+### Verified jj behavior (jj 0.45.1)
+
+Probed locally before designing anything; re-check if the jj version
+moves.
+
+- `jj git clone --colocate <url> <dir>` leaves `<dir>` holding **both**
+  `.git` and `.jj`, with `refs/heads/*`, `refs/remotes/origin/*` and
+  `refs/tags/*` populated. `--colocate` is already the 0.45 default, but
+  is passed explicitly: it works on older versions and is immune to a
+  user's `git.colocate = false`.
+- Because clones are colocated, every read-only git helper keeps working
+  unchanged, including every `os.Stat(dir + "/.git")` check in this
+  codebase. `jj git export` reports *"No export needed in colocated
+  workspaces"* — jj maintains the git refs itself.
+- Git `HEAD` in a fresh colocated clone is **detached**, so today's
+  `gitcli.UpdateWorktree` would warn `"HEAD is detached, left untouched"`
+  on every run forever. The update path genuinely needs a jj variant;
+  this is the one place where colocation does not save us.
+- Cloning into a temp sibling and `os.Rename`-ing it into place works for
+  a jj clone (the primary workspace's `.jj/repo` is a directory, not a
+  path reference), so `engine.CloneInto`'s existing tmp+rename pattern is
+  reused as-is.
+- `jj workspace add <path>` creates a directory holding `.jj` but **no**
+  `.git`: a jj workspace is not a git repo. Its `.jj/repo` is a text file
+  holding a **relative** path to the central clone's `.jj/repo`.
+- `jj workspace list -T 'name ++ "|" ++ if(root, root, "") ++ "|" ++
+  target.empty()'` returns name, **absolute** path and clean/dirty for
+  every workspace in one call — everything the linked-worktree check
+  needs. (`root()` needs jj >= 0.38.)
+- `jj workspace forget <name>` does **not** delete the directory; the
+  caller must remove it.
+- `jj git init --colocate` on an existing git clone keeps git `HEAD` on
+  its branch, leaves remote bookmarks **untracked** (so a later `jj git
+  fetch` won't advance them — adoption must also run `jj bookmark track
+  <default>@origin`), and snapshots a dirty working tree into `@` *and
+  stages it in git's index*. Hence the never-adopt-a-dirty-clone rule.
+
+### Shape
+
+Two new packages, in the existing style (plain functions taking an
+`execx.Exec` and a timeout explicitly; no interfaces, no globals):
+
+- `internal/jjcli` — the one place that runs `jj`, exactly as
+  `internal/gitcli` is the one place that runs `git`.
+- `internal/vcs` — the seam: `Kind` (`"git"`/`"jj"`), `Detect(dir)`,
+  `Resolve(dir, configured)`, `RepoRoot(path)`, and one dispatch function
+  per mutating operation.
+
+The laziness that keeps this small: **every dispatch function operating on
+an existing clone calls `Detect(dir)` itself** (one `os.Stat` of
+`dir/.jj`), so the configured kind does not get threaded through
+`engine.Env`, `MultiOwnerRun` or `archive`. Only two things need the
+*configured* kind at all — creating a clone that doesn't exist yet, and
+deciding to adopt — and both live on `engine.Task`.
+
+`vcs.Resolve(dir, configured)` is the whole policy in one function: `.jj`
+present means `(jj, false)`; a clone without `.jj` under a configured `jj`
+means `(jj, true)` (adopt); anything else means `(configured, false)`.
+
+| Operation | jj commands |
+| --- | --- |
+| Clone | `jj git clone --colocate --quiet -- <url> <tmp>`, then `os.Rename(tmp, dest)` |
+| Adopt | `jj git init --colocate` + `jj bookmark track <default>@origin` (refused if dirty) |
+| Fetch | `jj git fetch --remote origin` (propagates deleted remote bookmarks/tags, matching `--prune`) |
+| IsDirty | `jj log --no-graph -r @ -T 'empty ++ "|" ++ if(description, "d", "")'`: dirty when not empty **or** described |
+| UpdateWorkingCopy | no-op without a default branch; warn and leave when dirty; no-op when `@-` already points at `<default>@origin`; else `jj new <default>@origin` |
+| Worktrees | `jj workspace list -T ...`, skipping the `default` entry as `gitcli.LinkedWorktrees` skips the primary |
+| WorktreeAdd | `jj workspace add --name <sanitized-branch> -r <revset> <path>` |
+| WorktreeRemove | `jj workspace forget <name>`, then `os.RemoveAll(path)` — only a path `Workspaces` returned for this repo, and only after a successful forget |
+| SetRemoteURL | `jj git remote set-url origin <url>` |
+
+`WorktreeAdd` resolves `<branch>` to a revset in this order: local
+bookmark `<branch>`, `<branch>@origin`, `<default>@origin`, `@`.
+
+`Settings.VCS` is a plain validated string (`git|jj`), mirroring
+`Protocol` exactly rather than introducing a new type, so `vcs.Kind(...)`
+at the boundary is the only conversion. Per-repo overrides make
+`FileConfig.Repos` a `[]RepoConfig` whose `UnmarshalJSON` accepts either a
+bare string or `{"name": ..., "vcs": ...}`, so every existing config file
+stays valid:
+
+```json
+"repos": ["someone/useful-lib", { "name": "cli/cli", "vcs": "jj" }]
+```
+
+`settings.ApplyOwnerOverrides` is called **only** from `runWorkspaceSync`
+today, so the single-repo entry points (`cloneOne`, `cmdWorktreeAdd`,
+`runSingleRepoSync`, `runSingleOwnerSync`) never see per-owner config at
+all. A new `ApplyRepoOverrides(base, fc, owner, repo)` is applied at each
+of them — without it, `vcs: jj` on an owner would silently not apply to
+`clone` or `worktree add`.
+
+### Invariants this phase adds
+
+- **A dirty clone is never adopted.** `jj git init --colocate` snapshots
+  the working tree into `@` and stages it in git's index, which is a
+  mutation of the user's uncommitted work. Reported as a warning and
+  skipped, repeating every run, exactly like the existing dirty-tree
+  handling.
+- **A jj workspace is only ever removed by name through its own repo.**
+  `jj workspace forget` leaves the directory behind, so this tool does the
+  `os.RemoveAll` — and only for a path `vcs.Worktrees` returned for that
+  repo, never a path the user named directly.
+
+### Steps
+
+Each step is its own jj change (`jj new -m ...`) before any edits.
+
+- [x] jj: `jj new -m "docs(aidev): plan jujutsu support"`. This section.
+- [ ] jj: `jj new -m "feat(jjcli): one place that runs jj"`.
+  - [ ] `internal/jjcli/jjcli.go`: `Clone`, `Adopt`, `Fetch`, `IsDirty`,
+        `UpdateWorkingCopy`, `Workspaces`, `WorkspaceAdd`,
+        `WorkspaceForget`, `ResolveRevset`, `SetRemoteURL`.
+        `UpdateWorkingCopy` keeps `gitcli.UpdateWorktree`'s exact
+        `(warning string, dirty bool, err error)` signature so the
+        dispatcher needs no adapter. `Workspaces` returns
+        `[]Workspace{Name, Path, Dirty}`; a malformed line is an error,
+        never silently skipped (same rule as `gitcli.Tags`).
+  - [ ] Tests: fake `execx.Exec` asserting exact argv per function, plus
+        `Workspaces`/`IsDirty` output parsing including empty and
+        malformed input.
+- [ ] jj: `jj new -m "feat(vcs): git/jj dispatch seam"`.
+  - [ ] `internal/vcs/vcs.go`: `Kind`, `Detect`, `Resolve`, `RepoRoot`,
+        and the dispatch functions. `Worktrees` for git reuses
+        `gitcli.LinkedWorktrees` + `gitcli.IsDirty` per path (what
+        `archive.ConfirmAndRemoveWorktrees` does today); for jj it is the
+        single `jjcli.Workspaces` call. `WorktreeListText` is a
+        passthrough of `git worktree list` / `jj workspace list`, so
+        `worktree list`'s output is unchanged for git repos.
+  - [ ] `RepoRoot(path)` absorbs the `.git`-file parsing currently inline
+        in `cli.resolveWorktreeOwnerRepo` and adds the `.jj/repo` form
+        (relative path resolved against `<path>/.jj`, then strip the
+        `/.jj/repo` suffix). The `<root>/<owner>/repos/<repo>` layout
+        check and its symlink handling stay in `cli` — that is `store`
+        layout knowledge, not VCS knowledge.
+  - [ ] Tests: `Detect`/`Resolve` table over a temp tree; `RepoRoot` for
+        both file forms plus "this is a clone, not a worktree" and
+        malformed input.
+- [ ] jj: `jj new -m "feat(config): vcs setting, per owner and per repo"`.
+  - [ ] `settings`: `Settings.VCS` + `Default` + `Validate`, the
+        `settingsTable` entry (`--vcs`, `GH_WORKSPACE_VCS`, `vcs`, for
+        `CmdSync`/`CmdClone`/`CmdWorktreeAdd`), `OwnerConfig.VCS` +
+        `ApplyOwnerOverrides`, `RepoConfig` + `UnmarshalJSON`,
+        `ApplyRepoOverrides`, and `validateOwnersAndRepos` over the new
+        `Repos` type.
+  - [ ] Update the `fc.Repos` readers: `cli/sync.go`'s `addExplicit`
+        loop, `cli/clone.go`'s `configTracks`, and
+        `TestSettingsTableConfigKeysMatchFileConfig`.
+  - [ ] `cli/main.go`'s `usageFlags` gains `--vcs` so `--help` can't
+        drift.
+  - [ ] Tests: union decoding (bare string, object, object without
+        `vcs`, invalid `vcs`), owner and repo override precedence,
+        flag/env/file precedence.
+- [ ] jj: `jj new -m "feat(engine): clone, fetch and archive through the
+      vcs seam"`.
+  - [ ] `engine.Task` gains `VCS` (the configured kind for this repo) and
+        `Adopt`. `Adopt` is decided at **build** time, so `--dry-run`
+        reports it in the task's reason instead of surprising the user on
+        the next real run.
+  - [ ] `CloneInto` -> `vcs.Clone`; `processTask`'s fetch -> `vcs.Fetch`;
+        `gitcli.UpdateWorktree` -> `vcs.UpdateWorkingCopy`. Adoption runs
+        at the top of `processTask` for `Skip` and `Fetch` (one local
+        command, no network) but not for the archive actions — archiving a
+        repo should not convert it first. Adopting on `Skip` is a
+        deliberate exception to "an unchanged repo does no work at all":
+        otherwise a `vcs: jj` change would not take effect until the repo
+        next changed upstream.
+  - [ ] `archive.ConfirmAndRemoveWorktrees` moves to `vcs.Worktrees` +
+        `vcs.WorktreeRemove`; `archive.Archive`'s manifest reads stay on
+        `gitcli`. `fixupRename`'s `SetRemoteURL` -> `vcs.SetRemoteURL`.
+  - [ ] Tests: configured-jj clone, adopt-on-skip, dirty-clone-not-
+        adopted, the dry-run reason text, and an archive of a jj clone
+        whose workspace is forgotten and removed.
+- [ ] jj: `jj new -m "feat(worktree): jj workspaces"`.
+  - [ ] `cmdWorktreeAdd`: `fetchRepo` -> `vcs.Fetch`; `worktreeAddArgs` +
+        `runGit` -> one `vcs.WorktreeAdd(...) (note string, err error)`
+        call whose note is printed (git: `created new branch %q from %s`,
+        unchanged; jj: the no-bookmark line). Require `jj` on `PATH`
+        alongside `git` when the resolved kind is jj.
+  - [ ] `cmdWorktreeRemove`: `vcs.WorktreeRemove`, where `--force` means
+        "remove even though the jj working copy has changes" (jj cannot
+        lose committed data, so only an uncommitted-change refusal is
+        meaningful).
+  - [ ] `cmdWorktreeList`/`printWorktrees`: `vcs.WorktreeListText`.
+        `resolveWorktreeOwnerRepo`: `vcs.RepoRoot` for the first half,
+        layout check unchanged.
+  - [ ] Every single-repo entry point resolves per-owner/per-repo
+        settings via `ApplyRepoOverrides` before `buildEnv`.
+  - [ ] Tests: a real `jj git clone --colocate` of a local git repo
+        (skipped when `jj` is absent) driven through add/remove/list,
+        plus fake-exec argv assertions, plus `vcs: jj` on an owner
+        reaching `clone`.
+- [ ] jj: `jj new -m "docs: document jj support"`.
+  - [ ] `README.md`: the `vcs` row, and a short "Using jujutsu" section
+        covering colocation, the no-bookmark `worktree add` semantics,
+        adoption, and the jj-workspace-is-not-a-git-repo limitation.
+  - [ ] `AGENTS.md`: `vcs` in the workspace model, plus the two
+        invariants above.
+  - [ ] `.github/workflows/ci.yml`: install `jj` on both runners so the
+        integration-shaped tests actually run; the `exec.LookPath("jj")`
+        skip guard stays as the fallback for local runs without jj.
+
+### Known limitations, accepted
+
+- **Renaming a repo upstream breaks its linked jj workspaces.**
+  `fixupRename` moves the central clone's directory, and a jj workspace's
+  `.jj/repo` is a relative path, so it breaks (`Cannot access
+  ../../<old>/.jj/repo`). Git worktrees already break the same way today,
+  so this is a pre-existing limitation widened, not a new one: recorded as
+  an `AIDEV:` comment on `fixupRename` naming the upgrade path (re-point
+  each workspace after the move).
+- **A jj workspace is not a git repo.** `jj workspace add` has no
+  `--colocate`, so git-only tooling inside a worktree works only for
+  git-backed repos. Documented, not worked around.
+- `jj` needs a configured user name/email to create the commit `jj
+  workspace add` makes; jj's own error is surfaced as-is rather than
+  pre-checked.
+- No conversion in the other direction (jj clone back to git-only).
+  `rm -rf .jj` is the user's own one-liner.
+
 ## Open questions (resolved)
 
 - [x] `archive` is **never** a manual verb. Archiving only happens as a
@@ -1736,12 +1995,15 @@ Each bullet group is its own jj change.
       the table above), so there's nothing concrete to speed up — adding
       state ahead of that need would be an unrequested abstraction.
       Revisit only once `status` exists and is shown to need it.
-- [x] jj-colocated worktrees (`jj workspace add` support) stay **out of
-      scope**. Real use case (the maintainer uses jj), but still only one
-      consumer — no interface seam added to `gitcli`'s worktree helpers
-      ahead of that work actually starting (YAGNI; an unused interface is
-      exactly the kind of unrequested abstraction the gates rule out). Add
-      the seam when this is actually built, not before.
+- [x] jj-colocated worktrees (`jj workspace add` support) stayed **out of
+      scope** through Phase 5. Real use case (the maintainer uses jj), but
+      still only one consumer — no interface seam added to `gitcli`'s
+      worktree helpers ahead of that work actually starting (YAGNI; an
+      unused interface is exactly the kind of unrequested abstraction the
+      gates rule out). Add the seam when this is actually built, not
+      before. **Reopened and answered by Phase 6**, which is that work:
+      the seam is `internal/vcs`, and it covers cloning, fetching and
+      updating as well as worktrees.
 - [x] Named workspaces (`--workspace work`) stay **out of scope**.
       `--config`/`--root` already cover switching between configs; nothing
       in this plan needs more than that.
