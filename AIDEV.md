@@ -1873,18 +1873,41 @@ of them — without it, `vcs: jj` on an owner would silently not apply to
 Each step is its own jj change (`jj new -m ...`) before any edits.
 
 - [x] jj: `jj new -m "docs(aidev): plan jujutsu support"`. This section.
-- [ ] jj: `jj new -m "feat(jjcli): one place that runs jj"`.
-  - [ ] `internal/jjcli/jjcli.go`: `Clone`, `Adopt`, `Fetch`, `IsDirty`,
+- [x] jj: `jj new -m "feat(jjcli): one place that runs jj"`.
+  - [x] `internal/jjcli/jjcli.go`: `Clone`, `Adopt`, `Fetch`, `IsDirty`,
         `UpdateWorkingCopy`, `Workspaces`, `WorkspaceAdd`,
         `WorkspaceForget`, `ResolveRevset`, `SetRemoteURL`.
         `UpdateWorkingCopy` keeps `gitcli.UpdateWorktree`'s exact
         `(warning string, dirty bool, err error)` signature so the
-        dispatcher needs no adapter. `Workspaces` returns
-        `[]Workspace{Name, Path, Dirty}`; a malformed line is an error,
-        never silently skipped (same rule as `gitcli.Tags`).
-  - [ ] Tests: fake `execx.Exec` asserting exact argv per function, plus
-        `Workspaces`/`IsDirty` output parsing including empty and
-        malformed input.
+        dispatcher needs no adapter. **Deviations, both deliberate**:
+        `ResolveRevset` is named `Resolve` and returns every commit the
+        revset matched (`[]string`) rather than one id plus an `ok` bool —
+        `UpdateWorkingCopy` needs the "more than one" case to recognize a
+        merge as `@`'s parent, which a single id cannot express. And
+        `Workspace` is `{Name, Path}` with no `Dirty`: jj only snapshots
+        the working copy of the workspace a command runs in, so another
+        workspace's recorded commit can be stale, and dirtiness has to
+        come from `IsDirty` against that workspace's own path — which is
+        exactly what the git path already does with `git status` per
+        linked worktree, so the dispatcher stays symmetric. A malformed
+        line is an error, never silently skipped (same rule as
+        `gitcli.Tags`), and so is a workspace with no recorded root
+        (created by jj < 0.38): callers use `Workspaces` to decide
+        whether deleting a clone would orphan a working copy, and
+        omitting one would make that decision wrong in the destructive
+        direction.
+  - [x] Tests: real-jj tests (`gitcli`'s own tests drive the real git
+        binary, so these match: clone from a `file://` git repo, then
+        assert colocation, dirty detection including a *described* empty
+        `@`, the update-then-idempotent path, workspace add/list/forget,
+        and adoption actually tracking the default bookmark), plus
+        fake-`execx.Exec` argv assertions and the parse-error branches.
+        **Deviation**: the real-jj tests `t.Skip` when `jj` is absent and
+        pin `JJ_CONFIG` to an empty file plus `JJ_USER`/`JJ_EMAIL`. That
+        isolation is load-bearing rather than hygiene — the maintainer has
+        `advance-bookmarks` set, which changes what `jj new` does to
+        bookmarks, so without it a local run would not be testing what CI
+        tests.
 - [ ] jj: `jj new -m "feat(vcs): git/jj dispatch seam"`.
   - [ ] `internal/vcs/vcs.go`: `Kind`, `Detect`, `Resolve`, `RepoRoot`,
         and the dispatch functions. `Worktrees` for git reuses
