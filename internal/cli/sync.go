@@ -54,9 +54,10 @@ func runSync(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if cfg.TrackedOnly {
 				fmt.Fprintln(stderr, "--tracked-only has no effect with a single <org>/<repo> argument; ignoring it")
 			}
-			return runSingleRepoSync(ctx, cfg, owner, repo, stdout, stderr)
+			return runSingleRepoSync(ctx, cfg, fc, owner, repo, stdout, stderr)
 		}
 		cfg.Owner = positional[0]
+		cfg.Settings = settings.ApplyRepoOverrides(cfg.Settings, fc, cfg.Owner, "")
 		if err := validateConfig(cfg); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitUsage
@@ -113,7 +114,7 @@ func resolveSyncConfig(fs *pflag.FlagSet, help *bool, args []string) (cfg config
 // full sync would make for this one repo (engine.SyncOne), but explicit=
 // false -- this is an ad hoc refresh, not a track action. Only clone and
 // worktree add mark a repo explicitly tracked.
-func runSingleRepoSync(ctx context.Context, cfg config, owner, repoName string, stdout, stderr io.Writer) int {
+func runSingleRepoSync(ctx context.Context, cfg config, fc *fileConfig, owner, repoName string, stdout, stderr io.Writer) int {
 	if err := validateOwnerRepoArgs(owner, repoName); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitUsage
@@ -128,6 +129,7 @@ func runSingleRepoSync(ctx context.Context, cfg config, owner, repoName string, 
 	}
 
 	cfg.Owner = owner
+	cfg.Settings = settings.ApplyRepoOverrides(cfg.Settings, fc, owner, repoName)
 	if err := os.MkdirAll(reposDir(cfg), 0o700); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitRuntimeFail

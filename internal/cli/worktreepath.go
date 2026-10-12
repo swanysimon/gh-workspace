@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/swanysimon/gh-workspace/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
 // resolveWorktreePath computes an "add"'s target directory when no
@@ -52,52 +53,31 @@ func expandWorktreePathTemplate(template, owner, repo, branch string) string {
 }
 
 // resolveWorktreeOwnerRepo finds the owning repo of a worktree at path, for
-// "worktree remove <path>"'s path-only form. A git worktree's ".git" is a
-// plain text file (not a directory) of the form "gitdir:
-// <central-clone>/.git/worktrees/<name>" -- not another repo's directory --
-// so following it back to <central-clone> and checking that it sits at
-// "<root>/<owner>/repos/<repo>" recovers owner/repo without needing the
-// caller to already know them.
+// "worktree remove <path>"'s path-only form. vcs.RepoRoot follows the
+// working copy back to its central clone (a git worktree's ".git" file or
+// a jj workspace's ".jj/repo" file); this function's own job is the part
+// that is store layout knowledge rather than VCS knowledge: checking the
+// result sits at "<root>/<owner>/repos/<repo>", which recovers owner/repo
+// without the caller having to already know them.
 func resolveWorktreeOwnerRepo(cfg config, path string) (owner, repo string, err error) {
-	dotGit := filepath.Join(path, ".git")
-	info, err := os.Stat(dotGit)
+	central, err := vcs.RepoRoot(path)
 	if err != nil {
-		return "", "", fmt.Errorf("%s: not a git worktree: %w", path, err)
-	}
-	if info.IsDir() {
-		return "", "", fmt.Errorf("%s is a repository's own clone, not a worktree (its .git is a directory, not a file)", path)
+		return "", "", err
 	}
 
-	raw, err := os.ReadFile(dotGit)
-	if err != nil {
-		return "", "", fmt.Errorf("reading %s: %w", dotGit, err)
-	}
-	line := strings.TrimSpace(string(raw))
-	const prefix = "gitdir: "
-	if !strings.HasPrefix(line, prefix) {
-		return "", "", fmt.Errorf("%s does not look like a worktree's .git file", dotGit)
-	}
-	gitDir := strings.TrimPrefix(line, prefix)
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(path, gitDir)
-	}
-
-	// gitDir is "<central-clone>/.git/worktrees/<name>"; strip that
-	// three-level suffix to recover <central-clone>.
-	central := filepath.Dir(filepath.Dir(filepath.Dir(gitDir)))
-
-	// git resolves symlinks when it writes gitDir (e.g. macOS's /tmp ->
-	// /private/tmp), but cfg.Root is whatever string the user/flag/env/
-	// config gave verbatim -- comparing them without resolving cfg.Root
-	// the same way would spuriously reject every worktree under a
-	// symlinked ancestor directory. Fall back to the unresolved root if
-	// resolution fails (e.g. the root doesn't exist yet), rather than
+	// Both sides are resolved before comparing, because neither is
+	// reliably resolved to begin with: cfg.Root is whatever string the
+	// user/flag/env/config gave verbatim, and central is resolved for a
+	// git worktree (git writes an absolute gitdir) but not for a jj
+	// workspace, whose .jj/repo is relative and so inherits whatever path
+	// the user typed. Without resolving both, a workspace under a
+	// symlinked ancestor (macOS's /var -> /private/var) is spuriously
+	// rejected -- which is exactly what happened the first time the jj
+	// path-only removal was tested. Resolution failing (e.g. the root
+	// doesn't exist yet) falls back to the unresolved value rather than
 	// erroring out of what should be a plain lookup.
-	root := cfg.Root
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	rel, err := filepath.Rel(root, central)
+	root := resolveSymlinks(cfg.Root)
+	rel, err := filepath.Rel(root, resolveSymlinks(central))
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", "", fmt.Errorf("%s is not a worktree of a repo under %s", path, cfg.Root)
 	}
@@ -110,4 +90,11 @@ func resolveWorktreeOwnerRepo(cfg config, path string) (owner, repo string, err 
 		return "", "", fmt.Errorf("%s is not a worktree of a repo under %s", path, cfg.Root)
 	}
 	return owner, repo, nil
+}
+
+func resolveSymlinks(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }

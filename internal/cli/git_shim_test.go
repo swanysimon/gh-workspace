@@ -17,10 +17,10 @@ import (
 // TestCloneRepoShimComputesDestAndURL is the one gitcli shim with real
 // logic of its own (reposDir(cfg)+repo.Name for dest/tmp,
 // ghcli.CloneURL(repo, cfg.Protocol) for the URL) rather than pure
-// forwarding; the other surviving shim in git.go (fetchRepo, besides
-// runGit) just hands cfg.Timeout/cfg.Deps.exec straight through, with no
-// risk of a "right value, wrong field" mix-up the way gh.go's listRepos
-// had between cfg.Owner and cfg.MaxRepos.
+// forwarding; the other surviving shim in git.go, fetchRepo, just hands
+// cfg.Timeout/cfg.Deps.exec straight through, with no risk of a "right
+// value, wrong field" mix-up the way gh.go's listRepos had between
+// cfg.Owner and cfg.MaxRepos.
 func TestCloneRepoShimComputesDestAndURL(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Root = t.TempDir()
@@ -80,15 +80,14 @@ func TestCloneRepoShimSelectsHTTPSURL(t *testing.T) {
 	}
 }
 
-// TestGitShimsForwardDirAndTimeout checks the two gitcli shims that
-// survived engine's extraction (runGit, fetchRepo -- isDirty/
-// updateWorktree/headInfo/tags/linkedWorktrees/setRemoteURL became dead
-// code once engine's processTask/fixupRename started calling gitcli
-// directly, and were removed along with this test's coverage of them)
-// actually pass their dir argument through to cfg.Deps.exec, so a
-// copy-paste bug swapping which directory a shim operates on would be
-// caught here rather than only by the real-git integration tests
-// elsewhere in this package.
+// TestGitShimsForwardDirAndTimeout checks that fetchRepo -- the one shim
+// left in git.go besides cloneRepo, now forwarding to internal/vcs rather
+// than straight to gitcli -- actually passes its dir argument through to
+// cfg.Deps.exec, so a copy-paste bug swapping which directory a shim
+// operates on would be caught here rather than only by the real-git
+// integration tests elsewhere in this package. (runGit was removed along
+// with its last callers: worktree add/remove/list now go through
+// internal/vcs, which runs the commands itself.)
 func TestGitShimsForwardDirAndTimeout(t *testing.T) {
 	const wantDir = "/shim/test/dir"
 	cfg := defaultConfig()
@@ -106,7 +105,6 @@ func TestGitShimsForwardDirAndTimeout(t *testing.T) {
 		name string
 		call func()
 	}{
-		{"runGit", func() { runGit(context.Background(), cfg, wantDir, "status") }},
 		{"fetchRepo", func() { fetchRepo(context.Background(), cfg, wantDir) }},
 	}
 	for _, tc := range cases {

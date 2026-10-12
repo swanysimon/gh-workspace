@@ -15,14 +15,16 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/swanysimon/gh-workspace/internal/engine"
 	"github.com/swanysimon/gh-workspace/internal/settings"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
-// runWorktree dispatches the "gh workspace worktree <verb>" subcommands. It
-// is a thin wrapper around "git worktree": this tool only resolves the
-// <org>/<repo> argument to a clone path (cloning it first if needed) and
-// guards the one destructive interaction with archiving; git does
-// everything else it already does correctly (branch DWIM, dirty-tree
-// refusal, etc).
+// runWorktree dispatches the "gh workspace worktree <verb>" subcommands.
+// It is a thin wrapper around "git worktree" / "jj workspace" (see
+// internal/vcs, which picks between them per clone): this tool only
+// resolves the <org>/<repo> argument to a clone path (cloning it first if
+// needed) and guards the one destructive interaction with archiving; the
+// VCS does everything else it already does correctly (branch DWIM,
+// dirty-tree refusal, etc).
 func runWorktree(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printWorktreeUsage(stderr)
@@ -139,7 +141,7 @@ func parseOwnerRepo(s string) (owner, repo string, err error) {
 func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "gh workspace worktree add [flags] <org>/<repo> <branch> [path]"
 	fs, help := newSubcommandFlagSet("gh workspace worktree add", usage, stderr)
-	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdIDWorktreeAdd, args)
+	cfg, fc, rest, err := resolveSubcommandConfig(fs, help, cmdIDWorktreeAdd, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -158,6 +160,11 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	branch := rest[1]
 	cfg.Owner = owner
+	// Per-owner and per-repo config has to be applied by hand here:
+	// ApplyOwnerOverrides is only reachable from a workspace-wide sync,
+	// so without this a configured "vcs" would silently not apply to the
+	// command most likely to be run against one repo.
+	cfg.Settings = settings.ApplyRepoOverrides(cfg.Settings, fc, owner, repoName)
 
 	// An explicit path argument always wins, resolved against the current
 	// directory exactly as before and never subject to the under-
@@ -183,6 +190,15 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(stderr, "gh-workspace requires git on PATH:", err)
 		return exitRuntimeFail
+	}
+	// Checked up front, where the kind is already known, rather than
+	// letting a missing binary surface as a failed subprocess halfway
+	// through -- the same courtesy the two checks above exist for.
+	if kind, _ := vcs.Resolve(filepath.Join(reposDir(cfg), repoName), vcs.Kind(cfg.VCS)); kind == vcs.JJ {
+		if _, err := exec.LookPath("jj"); err != nil {
+			fmt.Fprintln(stderr, "this repo is managed with jj, which requires jj on PATH:", err)
+			return exitRuntimeFail
+		}
 	}
 
 	gctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -267,49 +283,16 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	if repo.DefaultBranch != nil {
 		defaultBranch = repo.DefaultBranch.Name
 	}
-	gitArgs, created, err := worktreeAddArgs(ctx, cfg, dir, path, branch, defaultBranch)
+	note, err := vcs.WorktreeAdd(ctx, cfg.Deps.exec, cfg.Timeout, dir, path, branch, defaultBranch)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitRuntimeFail
 	}
-	if _, err := runGit(ctx, cfg, dir, gitArgs...); err != nil {
-		fmt.Fprintln(stderr, err)
-		return exitRuntimeFail
-	}
-	if created != "" {
-		fmt.Fprintf(stdout, "created new branch %q from %s\n", branch, created)
+	if note != "" {
+		fmt.Fprintln(stdout, note)
 	}
 	fmt.Fprintf(stdout, "added worktree for %s@%s at %s\n", repo.NameWithOwner, branch, path)
 	return exitSuccess
-}
-
-// worktreeAddArgs picks how to check out branch. A local branch, or a
-// remote-tracking origin/<branch> (which git DWIMs into a local tracking
-// branch), is checked out as-is. A branch that exists nowhere is created
-// from the default branch's remote-tracking ref (falling back to HEAD) with
-// --no-track, so it doesn't end up with the default branch as its upstream.
-// createdFrom is non-empty only when a new branch is being created.
-func worktreeAddArgs(ctx context.Context, cfg config, dir, path, branch, defaultBranch string) (args []string, createdFrom string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-
-	if _, err := cfg.Deps.exec(ctx, dir, "git", "check-ref-format", "--branch", branch); err != nil {
-		return nil, "", fmt.Errorf("%q is not a valid branch name", branch)
-	}
-
-	refExists := func(ref string) bool {
-		_, err := cfg.Deps.exec(ctx, dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-		return err == nil
-	}
-	if refExists("refs/heads/"+branch) || refExists("refs/remotes/origin/"+branch) {
-		return []string{"worktree", "add", "--", path, branch}, "", nil
-	}
-
-	base := "HEAD"
-	if defaultBranch != "" && refExists("refs/remotes/origin/"+defaultBranch) {
-		base = "origin/" + defaultBranch
-	}
-	return []string{"worktree", "add", "--no-track", "-b", branch, "--", path, base}, base, nil
 }
 
 // absWorktreePath resolves a user-supplied worktree path against the
@@ -396,12 +379,7 @@ func cmdWorktreeRemove(ctx context.Context, args []string, stdout, stderr io.Wri
 		return exitRuntimeFail
 	}
 
-	gitArgs := []string{"worktree", "remove"}
-	if force {
-		gitArgs = append(gitArgs, "--force")
-	}
-	gitArgs = append(gitArgs, "--", path)
-	if _, err := runGit(ctx, cfg, dir, gitArgs...); err != nil {
+	if err := vcs.WorktreeRemove(ctx, cfg.Deps.exec, cfg.Timeout, dir, path, force); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitRuntimeFail
 	}
@@ -530,7 +508,7 @@ func listOwnerWorktrees(ctx context.Context, cfg config, stdout, stderr io.Write
 
 func printWorktrees(ctx context.Context, cfg config, repoName, label string, stdout io.Writer) error {
 	dir := filepath.Join(reposDir(cfg), repoName)
-	out, err := runGit(ctx, cfg, dir, "worktree", "list")
+	out, err := vcs.WorktreeListText(ctx, cfg.Deps.exec, cfg.Timeout, dir)
 	if err != nil {
 		return fmt.Errorf("listing worktrees for %s: %w", label, err)
 	}

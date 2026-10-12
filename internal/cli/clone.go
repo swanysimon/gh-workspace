@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/swanysimon/gh-workspace/internal/engine"
+	"github.com/swanysimon/gh-workspace/internal/settings"
 )
 
 func printCloneUsage(w io.Writer) {
@@ -33,7 +34,7 @@ func printUntrackUsage(w io.Writer) {
 func cmdClone(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "gh workspace clone [flags] <org>/<repo>..."
 	fs, help := newSubcommandFlagSet("gh workspace clone", usage, stderr)
-	cfg, _, rest, err := resolveSubcommandConfig(fs, help, cmdIDClone, args)
+	cfg, fc, rest, err := resolveSubcommandConfig(fs, help, cmdIDClone, args)
 	if errors.Is(err, errHelpRequested) {
 		return exitSuccess
 	}
@@ -63,7 +64,7 @@ func cmdClone(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			failed++
 			continue
 		}
-		if err := cloneOne(ctx, cfg, owner, repoName, stdout, stderr); err != nil {
+		if err := cloneOne(ctx, cfg, fc, owner, repoName, stdout, stderr); err != nil {
 			fmt.Fprintf(stderr, "error: %s/%s: %v\n", owner, repoName, err)
 			failed++
 		}
@@ -76,9 +77,12 @@ func cmdClone(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 // cloneOne resolves and syncs one repo, taking owner's lock for the
 // duration (planning through state save), same as a full sync and
-// worktree add both do.
-func cloneOne(ctx context.Context, cfg config, owner, repoName string, stdout, stderr io.Writer) error {
+// worktree add both do. Per-owner and per-repo overrides are applied here
+// for the same reason cmdWorktreeAdd applies them: nothing else on this
+// path ever reads the config's owners/repos entries.
+func cloneOne(ctx context.Context, cfg config, fc *fileConfig, owner, repoName string, stdout, stderr io.Writer) error {
 	cfg.Owner = owner
+	cfg.Settings = settings.ApplyRepoOverrides(cfg.Settings, fc, owner, repoName)
 
 	if err := os.MkdirAll(reposDir(cfg), 0o700); err != nil {
 		return err

@@ -5,7 +5,6 @@ import (
 
 	"github.com/swanysimon/gh-workspace/internal/engine"
 	"github.com/swanysimon/gh-workspace/internal/execx"
-	"github.com/swanysimon/gh-workspace/internal/gitcli"
 	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
@@ -13,14 +12,6 @@ import (
 // implementation of this behavior (GIT_TERMINAL_PROMPT=0 etc. included).
 func execCommand(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	return execx.Run(ctx, dir, name, args...)
-}
-
-// runGit runs one git command bounded by cfg.Timeout. It is still a real
-// shim (not dead code): worktree.go's worktreeAddArgs/cmdWorktreeAdd/
-// cmdWorktreeList call it directly for one-off git invocations (worktree
-// add/list) that have nothing to do with engine's task orchestration.
-func runGit(ctx context.Context, cfg config, dir string, args ...string) ([]byte, error) {
-	return gitcli.Run(ctx, cfg.Deps.exec, cfg.Timeout, dir, args...)
 }
 
 // cloneRepo clones into a temp sibling directory and renames on success, so
@@ -39,10 +30,10 @@ func cloneRepo(ctx context.Context, cfg config, repo ghRepo) error {
 	return engine.CloneInto(ctx, buildEnv(cfg), repo, vcs.Kind(cfg.VCS))
 }
 
-// fetchRepo mirrors upstream refs exactly: --prune and --prune-tags make
-// deleted branches and tags disappear locally too. Still a real shim:
-// worktree add fetches an already-cloned repo before adding a worktree, a
-// path engine's task orchestration doesn't cover.
+// fetchRepo mirrors upstream exactly -- deleted branches and tags
+// disappear locally too, whichever VCS manages the clone. Still a real
+// shim: worktree add fetches an already-cloned repo before adding a
+// worktree, a path engine's task orchestration doesn't cover.
 func fetchRepo(ctx context.Context, cfg config, dir string) error {
-	return gitcli.Fetch(ctx, cfg.Deps.exec, cfg.Timeout, dir)
+	return vcs.Fetch(ctx, cfg.Deps.exec, cfg.Timeout, dir)
 }

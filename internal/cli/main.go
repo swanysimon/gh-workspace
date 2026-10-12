@@ -83,6 +83,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if cfg.TrackedOnly {
 		return runWorkspaceSync(ctx, cfg, fc, []string{cfg.Owner}, stdout, stderr)
 	}
+	// An owner's own config entry has to be applied by hand on this path
+	// too; only a workspace-wide sync walks the owners list itself.
+	cfg.Settings = settings.ApplyRepoOverrides(cfg.Settings, fc, cfg.Owner, "")
 	return runSingleOwnerSync(ctx, cfg, stdout, stderr)
 }
 

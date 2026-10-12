@@ -2028,25 +2028,44 @@ Each step is its own jj change (`jj new -m ...`) before any edits.
         override reaching the task; and, in `archive`, a jj clone whose
         workspace is forgotten *and* whose directory is removed, plus the
         refusal case leaving both in place.
-- [ ] jj: `jj new -m "feat(worktree): jj workspaces"`.
-  - [ ] `cmdWorktreeAdd`: `fetchRepo` -> `vcs.Fetch`; `worktreeAddArgs` +
+- [x] jj: `jj new -m "feat(worktree): jj workspaces"`.
+  - [x] `cmdWorktreeAdd`: `fetchRepo` -> `vcs.Fetch`; `worktreeAddArgs` +
         `runGit` -> one `vcs.WorktreeAdd(...) (note string, err error)`
         call whose note is printed (git: `created new branch %q from %s`,
         unchanged; jj: the no-bookmark line). Require `jj` on `PATH`
         alongside `git` when the resolved kind is jj.
-  - [ ] `cmdWorktreeRemove`: `vcs.WorktreeRemove`, where `--force` means
+  - [x] `cmdWorktreeRemove`: `vcs.WorktreeRemove`, where `--force` means
         "remove even though the jj working copy has changes" (jj cannot
         lose committed data, so only an uncommitted-change refusal is
         meaningful).
-  - [ ] `cmdWorktreeList`/`printWorktrees`: `vcs.WorktreeListText`.
-        `resolveWorktreeOwnerRepo`: `vcs.RepoRoot` for the first half,
-        layout check unchanged.
-  - [ ] Every single-repo entry point resolves per-owner/per-repo
-        settings via `ApplyRepoOverrides` before `buildEnv`.
-  - [ ] Tests: a real `jj git clone --colocate` of a local git repo
-        (skipped when `jj` is absent) driven through add/remove/list,
-        plus fake-exec argv assertions, plus `vcs: jj` on an owner
-        reaching `clone`.
+  - [x] `cmdWorktreeList`/`printWorktrees`: `vcs.WorktreeListText`.
+  - [x] `resolveWorktreeOwnerRepo`: `vcs.RepoRoot` for the first half.
+        **Real bug, found by the new path-only-removal test**: the layout
+        check resolved symlinks on `cfg.Root` only, which worked for git
+        (git records an absolute, already-resolved gitdir) but not for jj
+        (`.jj/repo` is relative, so the recovered path inherits whatever
+        the user typed). Under macOS's `/var -> /private/var` the two
+        never matched and every jj workspace was rejected as "not a
+        worktree of a repo under <root>". Both sides are resolved now, via
+        one `resolveSymlinks` helper, which also stops the git path
+        depending on git having resolved it.
+  - [x] `runGit` deleted: worktree add/remove/list were its only callers
+        and `internal/vcs` runs those commands itself now. Its case in
+        `TestGitShimsForwardDirAndTimeout` went with it.
+  - [x] Every single-repo entry point resolves per-owner/per-repo
+        settings via `ApplyRepoOverrides` before `buildEnv`:
+        `cmdWorktreeAdd`, `cloneOne` (which gained an `fc` parameter),
+        `runSingleRepoSync` (same), and both callers of
+        `runSingleOwnerSync` (bare `gh workspace <owner>` in `main.go` and
+        `sync <owner>`), which pass an empty repo name so only the owner's
+        entry applies.
+  - [x] Tests: a real colocated clone driven through `worktree add`
+        (asserting the clone has both `.jj` and `.git`, the workspace has
+        neither a `.git` nor a bookmark, and the output names the
+        `jj bookmark create` command), `worktree list` showing jj's own
+        output, path-only `worktree remove` of a workspace, and a
+        config-file `repos` entry with `"vcs": "jj"` reaching
+        `worktree add` with no flag involved.
 - [ ] jj: `jj new -m "docs: document jj support"`.
   - [ ] `README.md`: the `vcs` row, and a short "Using jujutsu" section
         covering colocation, the no-bookmark `worktree add` semantics,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -933,5 +934,154 @@ func TestWorktreeListWorkspaceWideSkipsOwnersWithNothingCloned(t *testing.T) {
 	code := cmdWorktreeList(context.Background(), []string{"--root", root}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
+	}
+}
+
+// requireJJ skips a test that drives the real jj binary when jj is not
+// installed, and pins jj's configuration away from the developer's own.
+// Duplicated from the same-shaped helpers in internal/jjcli, internal/vcs,
+// internal/engine and internal/archive, matching how initTestRepo is
+// handled across this module's test suites.
+func requireJJ(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not installed")
+	}
+	cfg := filepath.Join(t.TempDir(), "jj.toml")
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("JJ_USER", "Test")
+	t.Setenv("JJ_EMAIL", "test@example.com")
+}
+
+// fakeGhForRepo points "gh" at a canned single-repo response, leaving every
+// other command (git, jj) to run for real -- the same seam
+// TestWorktreeAddClonesAndAddsWorktree above uses.
+func fakeGhForRepo(t *testing.T, origin string) {
+	t.Helper()
+	repo := ghRepo{
+		ID:            "R_repo1",
+		Name:          "repo1",
+		NameWithOwner: "myorg/repo1",
+		URL:           "file://" + origin,
+		SSHURL:        "file://" + origin,
+		DefaultBranch: &ghRefName{Name: "main"},
+	}
+	repoJSON, err := json.Marshal(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		if name == "gh" {
+			return repoJSON, nil
+		}
+		return old(ctx, dir, name, args...)
+	}
+}
+
+func TestWorktreeAddWithJJ(t *testing.T) {
+	requireJJ(t)
+	origin := initTestRepo(t)
+	if _, err := execCommand(context.Background(), origin, "git", "branch", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	fakeGhForRepo(t, origin)
+
+	root := t.TempDir()
+	wtPath := filepath.Join(t.TempDir(), "repo1-feature")
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", root, "--protocol", "https", "--vcs", "jj", "myorg/repo1", "feature", wtPath,
+	}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+
+	clone := filepath.Join(root, "myorg", "repos", "repo1")
+	for _, name := range []string{".jj", ".git"} {
+		if _, err := os.Stat(filepath.Join(clone, name)); err != nil {
+			t.Errorf("clone is missing %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "file.txt")); err != nil {
+		t.Errorf("workspace should have been created: %v", err)
+	}
+	// A jj workspace is not a git repo, which is worth asserting because
+	// it is the limitation the README documents.
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); !os.IsNotExist(err) {
+		t.Errorf("a jj workspace should have no .git, stat err = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "jj bookmark create feature -r @") {
+		t.Errorf("output should tell the user how to create the bookmark: %q", stdout.String())
+	}
+}
+
+// The whole point of the per-repo override: a "repos" entry with its own
+// "vcs" has to reach worktree add, which never looked at the config's
+// owners/repos lists before.
+func TestWorktreeAddUsesThePerRepoVCSFromTheConfigFile(t *testing.T) {
+	requireJJ(t)
+	clearConfigEnv(t)
+	origin := initTestRepo(t)
+	fakeGhForRepo(t, origin)
+
+	root := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	body := `{"repos": [{"name": "myorg/repo1", "vcs": "jj"}]}`
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+
+	var stdout, stderr bytes.Buffer
+	code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", root, "--protocol", "https", "--config", configPath, "myorg/repo1", "main", wtPath,
+	}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "repo1", ".jj")); err != nil {
+		t.Errorf("the config's per-repo vcs did not reach the clone: %v", err)
+	}
+}
+
+func TestWorktreeListAndPathOnlyRemoveForJJ(t *testing.T) {
+	requireJJ(t)
+	origin := initTestRepo(t)
+	fakeGhForRepo(t, origin)
+
+	root := t.TempDir()
+	wtPath := filepath.Join(t.TempDir(), "wt")
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdWorktreeAdd(context.Background(), []string{
+		"--root", root, "--protocol", "https", "--vcs", "jj", "myorg/repo1", "main", wtPath,
+	}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("cmdWorktreeAdd = %d, stderr=%s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdWorktreeList(context.Background(), []string{"--root", root, "myorg/repo1"}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("cmdWorktreeList = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "main") || !strings.Contains(stdout.String(), "default") {
+		t.Errorf("listing should show jj's own workspace output: %q", stdout.String())
+	}
+
+	// The path-only form has to find the owning repo through the
+	// workspace's .jj/repo file, whose contents are a *relative* path.
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdWorktreeRemove(context.Background(), []string{"--root", root, wtPath}, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("cmdWorktreeRemove = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("workspace directory should be gone, stat err = %v", err)
 	}
 }
