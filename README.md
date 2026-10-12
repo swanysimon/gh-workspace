@@ -13,7 +13,8 @@ gh extension install swanysimon/gh-workspace
 ```
 
 This downloads a prebuilt binary for your platform — no Go toolchain required. Requires `gh` itself to
-be authenticated (`gh auth login`) and `git` on `PATH`.
+be authenticated (`gh auth login`) and `git` on `PATH`, plus `jj` on `PATH` if you use
+[jujutsu](#using-jujutsu).
 
 To upgrade later:
 
@@ -112,15 +113,16 @@ gh workspace worktree remove --force my-org/my-repo ~/code/my-repo-some-branch  
 An existing local or `origin/` branch is checked out as-is; a branch that exists nowhere is created
 from `origin/<default branch>` (with no upstream set, so the first `git push -u` decides it). It takes
 the same per-owner lock as a sync run, so it refuses while one is in progress. The path-only form of
-`worktree remove` finds the owning repo by following the worktree's own `.git` file back to its central
-clone.
+`worktree remove` finds the owning repo by following the worktree's own `.git` file — or, for a jj
+workspace, its `.jj/repo` file — back to its central clone.
 
 `worktree add` refuses (after cloning, so the clone still lands) if the repo is archived upstream —
 archived repos aren't expected to get new work. If the repo is already archived locally, it refuses
 without re-cloning and points at the tarball instead. `worktree add`/`remove`/`list` accept `--root`,
-`--protocol`, `--timeout` and `--config`, same as `sync`; `--concurrency`, `--max-repos`,
-`--include-forks` and `--archive` don't apply to a single repo and aren't accepted (their environment
-variables and config keys are ignored).
+`--protocol`, `--timeout` and `--config`, same as `sync`, and `worktree add` also accepts `--vcs` (the
+one command of the three that can create a clone; `remove` and `list` detect what a clone already is).
+`--concurrency`, `--max-repos`, `--include-forks` and `--archive` don't apply to a single repo and
+aren't accepted (their environment variables and config keys are ignored).
 
 #### Worktree placement
 
@@ -146,6 +148,7 @@ Precedence is **flags > environment > config file > defaults**.
 | `--timeout` | `GH_WORKSPACE_TIMEOUT` | `timeout` | `30m` | per-subprocess timeout |
 | `--max-repos` | `GH_WORKSPACE_MAX_REPOS` | `maxRepos` | `10000` | `gh repo list --limit`; gh itself defaults to 30 |
 | `--protocol` | `GH_WORKSPACE_PROTOCOL` | `protocol` | `ssh` | `ssh` or `https` clone URLs |
+| `--vcs` | `GH_WORKSPACE_VCS` | `vcs` | `git` | `git` or `jj` — see [Using jujutsu](#using-jujutsu) |
 | `--include-forks` | `GH_WORKSPACE_INCLUDE_FORKS` | `includeForks` | `false` | include forked repos |
 | `--archive` | `GH_WORKSPACE_ARCHIVE` | `archive` | `true` | tarball archived repos and remove their clones |
 | `--worktree-root` | `GH_WORKSPACE_WORKTREE_ROOT` | `worktreeRoot` | the current directory | root directory new worktrees are placed under |
@@ -175,20 +178,58 @@ The config file is JSON, e.g.:
   "protocol": "ssh",
   "owners": [
     { "name": "my-org" },
-    { "name": "other-org", "includeForks": true, "archive": false }
+    { "name": "other-org", "includeForks": true, "archive": false },
+    { "name": "jj-org", "vcs": "jj" }
   ],
-  "repos": ["someone/useful-lib", "cli/cli"]
+  "repos": ["someone/useful-lib", { "name": "cli/cli", "vcs": "jj" }]
 }
 ```
 
 `owners` is a list of orgs/users to sync wholesale, each optionally overriding the global
-`includeForks`/`archive`/`maxRepos`. `repos` is a flat `"<owner>/<repo>"` list of individually tracked
-repos outside those owners — the same list `clone`/`worktree add` add to implicitly. `root` and
+`includeForks`/`archive`/`maxRepos`/`vcs`. `repos` is a list of individually tracked repos outside
+those owners — the same list `clone`/`worktree add` add to implicitly. Each entry is either a plain
+`"<owner>/<repo>"` string or an object with that `name` plus its own `vcs`. `root` and
 `worktreeRoot` accept a leading `~/`, expanded to your home directory (`~user/` and `$HOME` are not
 expanded; use an absolute path for those). Its search path (first match wins): `--config` flag,
 `$GH_WORKSPACE_CONFIG`, `$XDG_CONFIG_HOME/gh-workspace/config.json`, else
 `~/.config/gh-workspace/config.json`. An unknown key or a value that fails to parse is a hard error — it
 is never silently ignored.
+
+## Using jujutsu
+
+Set `vcs` to `jj` — globally, for one owner, or for one repo — and that repo is managed with
+[jujutsu](https://jj-vcs.dev) instead of git. `git` is the default and nothing about a git-backed repo
+changes.
+
+```sh
+gh workspace --vcs jj clone my-org/my-repo       # jj git clone --colocate
+gh workspace worktree add my-org/my-repo feat/x  # jj workspace add
+```
+
+Worth knowing:
+
+- **Clones are colocated.** A jj clone holds both `.jj` and `.git`, so `git` keeps working inside it and
+  so does anything pointed at it that only speaks git — including coding agents.
+- **Which VCS a clone uses is detected, not configured.** A clone with a `.jj` directory is managed with
+  jj whatever the config says, so changing `vcs` never invalidates what's already on disk and a workspace
+  can hold both kinds. The setting only decides what a *new* clone is, and whether to convert an existing
+  one.
+- **An existing git clone is converted on sync, once you ask for it.** With `vcs` set to `jj` for a repo
+  that's already cloned with git, the next sync runs `jj git init --colocate` in it and starts tracking
+  the default branch's remote bookmark. A clone with uncommitted changes is never converted — it's
+  reported and left alone, every run, until the tree is clean. `--dry-run` says which repos would be
+  converted. Going back is `rm -rf .jj`.
+- **`worktree add` creates no bookmark.** In jj you name a bookmark when you push, not when you start, so
+  the branch argument only picks where the new workspace starts: that branch's bookmark if it exists,
+  otherwise the default branch. The command prints the `jj bookmark create` line to run when you're ready
+  to push.
+- **A jj workspace is not a git repo.** `jj workspace add` has no colocated form, so a worktree of a
+  jj-backed repo has a `.jj` and no `.git`. Use `jj` inside it; git-only tooling won't work there. (The
+  central clone is still colocated, so that's where to point anything that needs git.)
+- **`worktree remove` removes the directory itself.** `jj workspace forget` deliberately leaves it
+  behind, so this tool deletes it — only ever a path jj reports as one of that repo's own workspaces, and
+  only after the forget succeeds. A workspace with uncommitted changes needs `--force`.
+- `jj` has to be on `PATH`, and needs a name and email configured, for any of this.
 
 ## Where repositories end up
 

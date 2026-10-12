@@ -21,9 +21,34 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # The jj-driving tests skip themselves when jj is absent, so without
+      # this step they would quietly stop covering anything on CI. Pinned to
+      # the version the jj behavior in AIDEV.md's Phase 6 was verified
+      # against, from the official release assets (there is no jj in the
+      # runner images, and no first-party action).
+      - name: install jj
+        env:
+          JJ_VERSION: v0.45.1
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)   target=x86_64-unknown-linux-musl ;;
+            Linux-ARM64) target=aarch64-unknown-linux-musl ;;
+            macOS-ARM64) target=aarch64-apple-darwin ;;
+            macOS-X64)   target=x86_64-apple-darwin ;;
+            *) echo "no jj build for ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/jj"
+          # "-f -" explicitly, rather than relying on either tar's default
+          # archive: GNU tar (Linux) and bsdtar (macOS) both run this.
+          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/$JJ_VERSION/jj-$JJ_VERSION-$target.tar.gz" \
+            | tar -xzf - -C "$RUNNER_TEMP/jj" ./jj
+          echo "$RUNNER_TEMP/jj" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/jj/jj" --version
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      # Tests drive the real git binary; gh is only looked up on PATH (its
-      # output is stubbed), and both are preinstalled on GitHub runners.
+      # Tests drive the real git and jj binaries; gh is only looked up on
+      # PATH (its output is stubbed). git and gh are preinstalled on GitHub
+      # runners; jj is installed above.
       - run: go test -race -count=1 ./...

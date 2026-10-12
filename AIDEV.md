@@ -2066,15 +2066,66 @@ Each step is its own jj change (`jj new -m ...`) before any edits.
         output, path-only `worktree remove` of a workspace, and a
         config-file `repos` entry with `"vcs": "jj"` reaching
         `worktree add` with no flag involved.
-- [ ] jj: `jj new -m "docs: document jj support"`.
-  - [ ] `README.md`: the `vcs` row, and a short "Using jujutsu" section
-        covering colocation, the no-bookmark `worktree add` semantics,
-        adoption, and the jj-workspace-is-not-a-git-repo limitation.
-  - [ ] `AGENTS.md`: `vcs` in the workspace model, plus the two
-        invariants above.
-  - [ ] `.github/workflows/ci.yml`: install `jj` on both runners so the
-        integration-shaped tests actually run; the `exec.LookPath("jj")`
-        skip guard stays as the fallback for local runs without jj.
+- [x] jj: `jj new -m "docs: document jj support"`.
+  - [x] `README.md`: the `vcs` row, the `owners[].vcs` and object-form
+        `repos` entries in the example config, `jj` in the install
+        prerequisites, `--vcs` in the worktree-flags paragraph, the
+        path-only `worktree remove` note covering `.jj/repo`, and a
+        "Using jujutsu" section covering colocation, detection beating
+        configuration, adoption (including that a dirty clone is never
+        converted and `--dry-run` says which would be), the no-bookmark
+        `worktree add` semantics, the jj-workspace-is-not-a-git-repo
+        limitation, and that removal deletes the directory itself.
+  - [x] `AGENTS.md`: `vcs` in the workspace model, the jj form of
+        `worktree add` in the command list, the path-only removal note,
+        and the three new invariants.
+  - [x] `.github/workflows/ci.yml`: install `jj` on both runners from the
+        official release assets, pinned to the version Phase 6's behavior
+        was verified against (there is no jj in the runner images and no
+        first-party action), selecting the asset by `runner.os`/
+        `runner.arch` so an arm64 Linux runner works too. The
+        `exec.LookPath("jj")` skip guard stays as the fallback for local
+        runs without jj — but it is also why the install step matters:
+        without it the jj tests would skip silently and cover nothing.
+
+### Manual smoke test
+
+Built the real binary and drove it against a self-contained harness, the
+same way Phase 5 did: a fake `gh` on `PATH` ahead of the real one (a shell
+script answering `repo view` from a JSON file and `api graphql` by wrapping
+it as `{"data":{"r0":...}}`), a real local git repo as the upstream over a
+`file://` URL, and a pinned `JJ_CONFIG`/`JJ_USER`/`JJ_EMAIL`. All of these
+passed:
+
+- [x] `clone` with `"vcs": "jj"` coming only from a `repos` entry (no flag)
+      -> colocated clone holding both `.git` and `.jj`.
+- [x] Second `sync` of the same repo -> `skip`, no work.
+- [x] `worktree add <repo> existing` -> workspace on `existing@origin`, no
+      bookmark created, the `jj bookmark create` line printed, and the
+      workspace holding `.jj` and no `.git`.
+- [x] `worktree list` -> jj's own `jj workspace list` output.
+- [x] Path-only `worktree remove` -> found the owner/repo through the
+      workspace's relative `.jj/repo` and deleted the directory. (This is
+      where the symlink bug in Phase 6.5 was first caught by its test.)
+- [x] Upstream commit + `sync` -> `fetch`, and the clone's working copy
+      actually moved to the new commit. This is the case a colocated
+      clone's detached git HEAD would have made a permanent no-op warning
+      under the git implementation.
+- [x] `clone` with no `vcs`, then flip to `"vcs": "jj"` and `--dry-run` ->
+      `skip (adopt the existing git clone into jj, then: pushedAt unchanged
+      since last sync)`, and nothing on disk changed. Then a real sync ->
+      `.jj` appeared, action still `skip`.
+- [x] Same, with an uncommitted change in the clone -> `warning: working
+      tree has uncommitted changes, not adopting it into jj`, no `.jj`,
+      exit 0.
+- [x] Regression: the same commands against a git clone that was never
+      adopted -> `created new branch "brand-new" from origin/main`, no
+      upstream on the new branch, git's own `git worktree list` output, and
+      path-only removal through the `.git` file. Byte-for-byte what it was
+      before this phase.
+- [x] Detection beating configuration, observed by accident while writing
+      the above: a root whose clone had already been adopted kept using jj
+      under a config with no `vcs` at all, which is the intended rule.
 
 ### Known limitations, accepted
 

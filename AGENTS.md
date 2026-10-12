@@ -26,6 +26,12 @@ Central clones always live at `<root>/<owner>/repos/<repo>`. Worktrees are place
 `worktreeRoot`/`worktreePath` template (default: the current directory, named after the repo) or an
 explicit path — never implicitly created by a plain `clone`.
 
+A repo is managed with **git** (the default) or **jujutsu**, set by `vcs` globally, per owner
+(`owners[].vcs`), or per repo (a `repos[]` entry). jj clones are colocated, so they are valid git repos
+too and every read-only git helper still works against them; `internal/vcs` dispatches everything that
+*mutates* a clone or worktree, detecting the kind from a clone's own `.jj` directory rather than from
+configuration. A jj worktree is a `jj workspace`, which is not a git repo.
+
 ## Commands
 
 The CLI is installed as a `gh` extension (`gh extension install swanysimon/gh-workspace`):
@@ -38,9 +44,12 @@ The CLI is installed as a `gh` extension (`gh extension install swanysimon/gh-wo
   skip/fetch/archive logic as sync
 * `gh workspace untrack <owner>/<repo>` - clear an explicit track; never deletes local data
 * `gh workspace worktree add <owner>/<repo> <branch> [path]` - clone first if needed (and track), then add
-  a worktree. If the repo is archived upstream, fail with a message (after the clone)
+  a worktree. If the repo is archived upstream, fail with a message (after the clone). On a jj repo this
+  is `jj workspace add` and **no bookmark is created**: `<branch>` only selects the starting revision,
+  and the command prints the `jj bookmark create` line to run
 * `gh workspace worktree remove <owner>/<repo> <path>` / `worktree remove <path>` - spin down a worktree;
-  the path-only form finds the owning repo via the worktree's own `.git` file
+  the path-only form finds the owning repo via the worktree's own `.git` (or, for a jj workspace,
+  `.jj/repo`) file
 * `gh workspace worktree list [<owner>[/<repo>]]` - list worktrees for one repo, one owner, or (no
   argument) the whole workspace
 
@@ -72,6 +81,15 @@ SHA-256.
   worktree`, the CLI asks before removing it to proceed with archiving (answers "no" and refuses on an
   unattended run with no terminal on stdin, unless `--yes`). If the user agrees, it removes every worktree
   and then archives as normal.
+- **Which VCS manages a clone is detected, not configured.** A clone holding `.jj` is managed with jj
+  whatever `vcs` says, so changing the setting never invalidates what is on disk and a workspace can
+  hold both kinds. `vcs` decides only what a new clone is, and whether to convert an existing git clone.
+- **A dirty clone is never adopted into jj.** `jj git init --colocate` snapshots the working tree into
+  `@` and stages it in git's index, so converting a clone with uncommitted changes would be touching
+  them. It is reported and skipped, repeating every run, like every other dirty-tree case.
+- **A jj workspace is only ever removed by name, through its own repo.** `jj workspace forget` leaves
+  the directory behind, so this tool does the deletion itself — and only for a path jj reported as one
+  of that clone's own workspaces.
 - **Per-owner locks, never a workspace-wide one.** A workspace-wide sync's tasks share one worker pool,
   but each owner's lock/state is independent: another run holding one owner's lock gets that owner
   skipped and reported, while every other owner still finishes and the run exits non-zero.
