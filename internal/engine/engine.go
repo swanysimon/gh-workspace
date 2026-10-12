@@ -218,11 +218,29 @@ func decidePrevState(prev store.RepoState, known bool) plan.PrevState {
 	}
 }
 
-// BuildTasks is the sequential pre-pass: fork filtering, name validation,
-// case-collision detection, ID-based rename fix-up, then plan.Decide per
-// repo. It runs single-threaded, before any worker goroutine starts. failed
-// counts repos the pre-pass refused (invalid or colliding names); they are
-// reported here and must fail the run, since they will never be synced.
+// listingFilterReason reports why a repo returned by an owner's listing is
+// excluded before plan.Decide ever sees it, or "" if it is not. Forks and
+// archived repos are both plain listing-time filters, controlled by
+// IncludeForks/IncludeArchived respectively, and are deliberately checked
+// here rather than in plan.Decide: a filtered-out repo must never be
+// treated as missing (see MissingTasks) or collide-checked against a name
+// it will never occupy a directory for.
+func listingFilterReason(r ghcli.Repo, s settings.Settings) string {
+	if r.IsFork && !s.IncludeForks {
+		return "fork"
+	}
+	if r.IsArchived && !s.IncludeArchived {
+		return "archived repo"
+	}
+	return ""
+}
+
+// BuildTasks is the sequential pre-pass: fork/archived filtering, name
+// validation, case-collision detection, ID-based rename fix-up, then
+// plan.Decide per repo. It runs single-threaded, before any worker
+// goroutine starts. failed counts repos the pre-pass refused (invalid or
+// colliding names); they are reported here and must fail the run, since
+// they will never be synced.
 func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State, stderr io.Writer) (tasks []Task, seen map[string]bool, failed int) {
 	seen = make(map[string]bool, len(repos))
 
@@ -236,11 +254,11 @@ func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State
 	// APFS is case-insensitive: an owner holding both Foo and foo maps to
 	// one directory. Skip both sides rather than interleaving two repos
 	// into it. Only repos that would otherwise be synced count: an
-	// excluded fork or an invalid name never gets a directory to collide
-	// over.
+	// excluded fork/archived repo or an invalid name never gets a
+	// directory to collide over.
 	lowerNames := map[string][]string{}
 	for _, r := range repos {
-		if (r.IsFork && !env.Settings.IncludeForks) || !store.ValidRepoName(r.Name) {
+		if listingFilterReason(r, env.Settings) != "" || !store.ValidRepoName(r.Name) {
 			continue
 		}
 		lower := strings.ToLower(r.Name)
@@ -258,9 +276,9 @@ func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State
 	}
 
 	for _, repo := range repos {
-		if repo.IsFork && !env.Settings.IncludeForks {
+		if reason := listingFilterReason(repo, env.Settings); reason != "" {
 			if env.Settings.Verbose {
-				fmt.Fprintf(stderr, "skipping fork %q\n", repo.Name)
+				fmt.Fprintf(stderr, "skipping %s %q\n", reason, repo.Name)
 			}
 			continue
 		}
@@ -403,11 +421,12 @@ func missingReason(prev store.RepoState) string {
 
 // MissingTasks builds one task per repo that is in st but was not returned
 // by this owner's listing. listed is every name the listing returned
-// *before* any filtering, which is the distinction that matters: a fork
-// excluded by includeForks, a repo skipped for an invalid or colliding
-// name, and a repo GitHub never mentioned all look alike downstream of
-// BuildTasks, and treating a filtered-out fork as missing would tarball
-// every fork a workspace had ever cloned. explicit names the repos getting
+// *before* any filtering, which is the distinction that matters: a fork or
+// archived repo excluded by includeForks/includeArchived, a repo skipped
+// for an invalid or colliding name, and a repo GitHub never mentioned all
+// look alike downstream of BuildTasks, and treating a filtered-out repo as
+// missing would tarball every such repo a workspace had ever cloned.
+// explicit names the repos getting
 // their own batched lookup instead (see BuildExplicitTasks), which produce
 // their own MissingUpstream task and must not be double-counted here.
 //

@@ -183,6 +183,7 @@ Precedence is **flags > environment > config file > defaults**.
 | `--protocol` | `GH_WORKSPACE_PROTOCOL` | `protocol` | `ssh` | all | `ssh` or `https` clone URLs |
 | `--vcs` | `GH_WORKSPACE_VCS` | `vcs` | `git` | sync, clone, worktree add | `git` or `jj` — see [Using jujutsu](#using-jujutsu) |
 | `--include-forks` | `GH_WORKSPACE_INCLUDE_FORKS` | `includeForks` | `false` | sync | include forked repos |
+| `--include-archived` | `GH_WORKSPACE_INCLUDE_ARCHIVED` | `includeArchived` | `false` | sync | include archived repos |
 | `--archive` | `GH_WORKSPACE_ARCHIVE` | `archive` | `true` | sync, clone | tarball archived repos and remove their clones |
 | `--worktree-root` | `GH_WORKSPACE_WORKTREE_ROOT` | `worktreeRoot` | the current directory | worktree add | root directory new worktrees are placed under |
 | `--worktree-path` | `GH_WORKSPACE_WORKTREE_PATH` | `worktreePath` | `{repo}` | worktree add | worktree path template (`{owner}`, `{repo}`, `{branch}`) under `worktreeRoot` |
@@ -203,6 +204,13 @@ with a one-letter shorthand (again matching `gh`). Flags can go before or after 
 arguments, and `--` ends flag parsing. A boolean flag needs an explicit value to turn off a
 default that's already `true` — e.g. `--archive=false`.
 
+`--include-archived` and `--archive` answer different questions, and are easy to conflate:
+`--include-archived` (default off) decides whether an upstream-archived repo is looked at *at
+all* — off, it is skipped entirely, exactly like an excluded fork: no clone, no tarball, nothing
+on disk. `--archive` only matters for a repo that *is* included and turns out to be archived
+upstream: tarball it and remove the clone (the default), or just keep it as an ordinary live
+clone (`--archive=false`).
+
 The config file is JSON, e.g.:
 
 ```json
@@ -221,7 +229,7 @@ The config file is JSON, e.g.:
 ```
 
 `owners` lists orgs/users to sync wholesale, each optionally overriding the global
-`includeForks`/`archive`/`maxRepos`/`vcs`. `repos` lists individually tracked repos outside those
+`includeForks`/`includeArchived`/`archive`/`maxRepos`/`vcs`. `repos` lists individually tracked repos outside those
 owners — the same list `clone`/`worktree add` add to implicitly. Each entry is either a plain
 `"<owner>/<repo>"` string or an object with that `name` plus its own `vcs`. `root` and
 `worktreeRoot` accept a leading `~/`, expanded to your home directory (`~user/` and `$HOME` are

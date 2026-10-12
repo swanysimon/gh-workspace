@@ -80,7 +80,7 @@ func TestSettingsTableConfigKeysMatchFileConfig(t *testing.T) {
 // on: which commands accept which settings, matching the sync/worktree
 // surface documented in AIDEV.md and the README.
 func TestSettingsFor(t *testing.T) {
-	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes", "tracked-only", "archive-missing"}
+	syncOnly := []string{"concurrency", "max-repos", "include-forks", "include-archived", "dry-run", "verbose", "yes", "tracked-only", "archive-missing"}
 	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
 	worktreeOnly := []string{"worktree-root", "worktree-path"}
@@ -341,10 +341,11 @@ func TestApplyOwnerOverrides(t *testing.T) {
 
 	t.Run("each override field replaces its matching Settings field", func(t *testing.T) {
 		includeForks := true
+		includeArchived := true
 		archive := false
 		maxRepos := 5
-		got := ApplyOwnerOverrides(base, OwnerConfig{Name: "x", IncludeForks: &includeForks, Archive: &archive, MaxRepos: &maxRepos})
-		if got.IncludeForks != true || got.Archive != false || got.MaxRepos != 5 {
+		got := ApplyOwnerOverrides(base, OwnerConfig{Name: "x", IncludeForks: &includeForks, IncludeArchived: &includeArchived, Archive: &archive, MaxRepos: &maxRepos})
+		if got.IncludeForks != true || got.IncludeArchived != true || got.Archive != false || got.MaxRepos != 5 {
 			t.Errorf("got %+v, want overrides applied", got)
 		}
 		if got.Root != base.Root {

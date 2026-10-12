@@ -42,11 +42,18 @@ type Settings struct {
 	// owner; see ApplyRepoOverrides.
 	VCS          string
 	IncludeForks bool
-	Archive      bool
-	Force        bool
-	DryRun       bool
-	Verbose      bool
-	Yes          bool // skip the archive-with-live-worktrees confirmation prompt
+	// IncludeArchived is a listing-time filter, exactly like IncludeForks:
+	// an upstream-archived repo is skipped before plan.Decide ever sees it
+	// when false (the default), so it is never cloned, fetched, or
+	// tarballed. This is independent of Archive below, which only decides
+	// what happens to a repo that *is* included and turns out to be
+	// archived upstream.
+	IncludeArchived bool
+	Archive         bool
+	Force           bool
+	DryRun          bool
+	Verbose         bool
+	Yes             bool // skip the archive-with-live-worktrees confirmation prompt
 	// TrackedOnly, like Force, is sync-only and has no env var or config
 	// key -- it's a per-invocation choice about this run's shape, not a
 	// persistent setting. See AIDEV.md's "sync --tracked-only."
@@ -74,15 +81,16 @@ type Settings struct {
 // file/env/flag overlay.
 func Default() Settings {
 	return Settings{
-		Root:         DefaultRoot(),
-		Concurrency:  8,
-		Timeout:      30 * time.Minute,
-		MaxRepos:     10000,
-		Protocol:     "ssh",
-		VCS:          "git",
-		IncludeForks: false,
-		Archive:      true,
-		WorktreePath: "{repo}",
+		Root:            DefaultRoot(),
+		Concurrency:     8,
+		Timeout:         30 * time.Minute,
+		MaxRepos:        10000,
+		Protocol:        "ssh",
+		VCS:             "git",
+		IncludeForks:    false,
+		IncludeArchived: false,
+		Archive:         true,
+		WorktreePath:    "{repo}",
 	}
 }
 
@@ -138,18 +146,19 @@ func Validate(s Settings) error {
 // that reason -- since "which owners/repos does this workspace track" is a
 // list, not a scalar a single flag could sensibly set.
 type FileConfig struct {
-	Root         *string       `json:"root"`
-	Concurrency  *int          `json:"concurrency"`
-	Timeout      *string       `json:"timeout"` // parsed with time.ParseDuration
-	MaxRepos     *int          `json:"maxRepos"`
-	Protocol     *string       `json:"protocol"`
-	VCS          *string       `json:"vcs"`
-	IncludeForks *bool         `json:"includeForks"`
-	Archive      *bool         `json:"archive"`
-	Owners       []OwnerConfig `json:"owners"`
-	Repos        []RepoConfig  `json:"repos"`
-	WorktreeRoot *string       `json:"worktreeRoot"`
-	WorktreePath *string       `json:"worktreePath"`
+	Root            *string       `json:"root"`
+	Concurrency     *int          `json:"concurrency"`
+	Timeout         *string       `json:"timeout"` // parsed with time.ParseDuration
+	MaxRepos        *int          `json:"maxRepos"`
+	Protocol        *string       `json:"protocol"`
+	VCS             *string       `json:"vcs"`
+	IncludeForks    *bool         `json:"includeForks"`
+	IncludeArchived *bool         `json:"includeArchived"`
+	Archive         *bool         `json:"archive"`
+	Owners          []OwnerConfig `json:"owners"`
+	Repos           []RepoConfig  `json:"repos"`
+	WorktreeRoot    *string       `json:"worktreeRoot"`
+	WorktreePath    *string       `json:"worktreePath"`
 }
 
 // OwnerConfig is one entry in the config file's "owners" list: an owner to
@@ -157,11 +166,12 @@ type FileConfig struct {
 // setting. A nil field means "use the global default," exactly like
 // FileConfig's own nil-means-unset fields.
 type OwnerConfig struct {
-	Name         string  `json:"name"`
-	IncludeForks *bool   `json:"includeForks"`
-	Archive      *bool   `json:"archive"`
-	MaxRepos     *int    `json:"maxRepos"`
-	VCS          *string `json:"vcs"`
+	Name            string  `json:"name"`
+	IncludeForks    *bool   `json:"includeForks"`
+	IncludeArchived *bool   `json:"includeArchived"`
+	Archive         *bool   `json:"archive"`
+	MaxRepos        *int    `json:"maxRepos"`
+	VCS             *string `json:"vcs"`
 }
 
 // RepoConfig is one entry in the config file's "repos" list. It decodes
@@ -229,16 +239,20 @@ func ExpandHome(path string) (string, error) {
 	return filepath.Join(home, path[2:]), nil
 }
 
-// ApplyOwnerOverrides returns a copy of base with IncludeForks, Archive,
-// and MaxRepos replaced by oc's own values wherever oc sets them (its
-// pointer fields are non-nil) -- see AIDEV.md: "Per-owner entries can
-// override global defaults." Every other field of base is unchanged;
-// per-owner overrides are deliberately limited to these three, matching
-// the example config and the fields OwnerConfig actually declares.
+// ApplyOwnerOverrides returns a copy of base with IncludeForks,
+// IncludeArchived, Archive, MaxRepos, and VCS replaced by oc's own values
+// wherever oc sets them (its pointer fields are non-nil) -- see AIDEV.md:
+// "Per-owner entries can override global defaults." Every other field of
+// base is unchanged; per-owner overrides are deliberately limited to these
+// fields, matching the example config and the fields OwnerConfig actually
+// declares.
 func ApplyOwnerOverrides(base Settings, oc OwnerConfig) Settings {
 	out := base
 	if oc.IncludeForks != nil {
 		out.IncludeForks = *oc.IncludeForks
+	}
+	if oc.IncludeArchived != nil {
+		out.IncludeArchived = *oc.IncludeArchived
 	}
 	if oc.Archive != nil {
 		out.Archive = *oc.Archive
@@ -589,6 +603,18 @@ var settingsTable = []Setting{
 		},
 		parseEnv: parseEnvBool,
 		apply:    func(s *Settings, v any) { s.IncludeForks = v.(bool) },
+	},
+	{
+		flagName: "include-archived", kind: kindBool, usage: "include archived repos",
+		envVar: "GH_WORKSPACE_INCLUDE_ARCHIVED", configKey: "includeArchived", commands: inCmd(CmdSync),
+		fileValue: func(fc *FileConfig) (any, bool, error) {
+			if fc.IncludeArchived == nil {
+				return nil, false, nil
+			}
+			return *fc.IncludeArchived, true, nil
+		},
+		parseEnv: parseEnvBool,
+		apply:    func(s *Settings, v any) { s.IncludeArchived = v.(bool) },
 	},
 	{
 		flagName: "archive", kind: kindBool, usage: "tarball archived repos and remove their clones",

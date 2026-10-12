@@ -63,6 +63,7 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"      --protocol string    clone protocol: ssh or https (default \"ssh\")\n" +
 		"      --vcs string         version control system for new clones: git or jj (default \"git\")\n" +
 		"      --include-forks      include forked repos\n" +
+		"      --include-archived   include archived repos\n" +
 		"      --archive            tarball archived repos and remove their clones\n" +
 		"      --force              ignore stored pushedAt and re-sync every repo\n" +
 		"      --tracked-only       skip owner listings; refresh only repos already present locally or in state\n" +
@@ -343,7 +344,7 @@ func TestPinArchiveFalseEndToEnd(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"--root", t.TempDir(), "--dry-run", "--archive=false", "myorg"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"--root", t.TempDir(), "--dry-run", "--include-archived", "--archive=false", "myorg"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("Run() = %d, want %d; stderr=%s", code, exitSuccess, stderr.String())
 	}

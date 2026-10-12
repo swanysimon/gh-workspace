@@ -752,6 +752,25 @@ func TestBuildTasksReportsAPlannedAdoptionInTheReason(t *testing.T) {
 	}
 }
 
+// IncludeArchived gates an upstream-archived repo exactly like IncludeForks
+// gates a fork: excluded (and absent from "seen") by default, included and
+// planned normally once set.
+func TestBuildTasksFiltersArchivedReposUnlessIncludeArchived(t *testing.T) {
+	env := testEnv(t)
+	repo := ghcli.Repo{ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1", IsArchived: true, PushedAt: time.Now()}
+
+	tasks, seen, failed := BuildTasks(context.Background(), env, []ghcli.Repo{repo}, store.State{}, os.Stderr)
+	if failed != 0 || len(tasks) != 0 || seen["repo1"] {
+		t.Fatalf("got %d tasks, seen=%v, want the archived repo excluded", len(tasks), seen)
+	}
+
+	env.Settings.IncludeArchived = true
+	tasks, seen, failed = BuildTasks(context.Background(), env, []ghcli.Repo{repo}, store.State{}, os.Stderr)
+	if failed != 0 || len(tasks) != 1 || !seen["repo1"] {
+		t.Fatalf("got %d tasks, seen=%v, want the archived repo included", len(tasks), seen)
+	}
+}
+
 // A per-repo "vcs" override has to reach the task, since a workspace-wide
 // sync is the main way an individually configured repo gets synced.
 func TestBuildExplicitTasksUsesThePerRepoVCS(t *testing.T) {

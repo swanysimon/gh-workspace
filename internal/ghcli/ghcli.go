@@ -40,9 +40,10 @@ type RefName struct {
 	Name string `json:"name"`
 }
 
-// ListRepos does not pass --no-archived (archived repos are the point of
-// this tool) or --source (forks are filtered by the caller, so it can
-// report why a repo was skipped).
+// ListRepos does not pass --no-archived (archived repos are reported even
+// when excluded, so the caller can say why they were skipped -- same
+// reasoning as --source below) or --source (forks are filtered by the
+// caller too, so it can report why a repo was skipped).
 func ListRepos(ctx context.Context, run execx.Exec, owner string, limit int) ([]Repo, error) {
 	out, err := run(ctx, "", "gh", "repo", "list", owner,
 		"--limit", strconv.Itoa(limit),

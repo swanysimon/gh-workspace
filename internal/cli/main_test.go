@@ -241,6 +241,7 @@ func clearConfigEnv(t *testing.T) {
 }
 
 func TestRunEndToEnd(t *testing.T) {
+	homeFor(t) // must not read the real user's ~/.config/gh-workspace/config.json
 	ctx := context.Background()
 
 	normalOrigin := initTestRepo(t)
@@ -287,7 +288,7 @@ func TestRunEndToEnd(t *testing.T) {
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := Run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout, &stderr)
+	code := Run(ctx, []string{"--root", root, "--protocol", "https", "--include-archived", "testorg"}, &stdout, &stderr)
 	if code != exitSuccess {
 		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
 	}
@@ -355,7 +356,7 @@ func TestRunEndToEnd(t *testing.T) {
 	ghCalls.Store(0)
 	gitCalls.Store(0)
 	var stdout2, stderr2 bytes.Buffer
-	code2 := Run(ctx, []string{"--root", root, "--protocol", "https", "testorg"}, &stdout2, &stderr2)
+	code2 := Run(ctx, []string{"--root", root, "--protocol", "https", "--include-archived", "testorg"}, &stdout2, &stderr2)
 	if code2 != exitSuccess {
 		t.Fatalf("second Run() = %d, stderr=%s", code2, stderr2.String())
 	}
