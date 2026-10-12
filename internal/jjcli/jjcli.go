@@ -289,6 +289,25 @@ func WorkspaceForget(ctx context.Context, run execx.Exec, timeout time.Duration,
 	return nil
 }
 
+// RepairWorkspace re-points the workspace at workspacePath to the repo at
+// repoDir, after repoDir itself has moved. jj records the pointer as a
+// relative path in "<workspace>/.jj/repo", so moving the repo breaks it,
+// and jj has no "repair" command (workspace update-stale is a different
+// thing: a stale working-copy *commit*, not a moved repo).
+//
+// This writes that file directly, which is the one place in this package
+// that touches jj's own state instead of running jj. It is a single-line
+// plain-text pointer, and an absolute path is accepted where jj itself
+// writes a relative one -- absolute is deliberate here, since the whole
+// problem is that the relative path no longer resolves.
+func RepairWorkspace(workspacePath, repoDir string) error {
+	pointer := filepath.Join(workspacePath, ".jj", "repo")
+	if err := os.WriteFile(pointer, []byte(filepath.Join(repoDir, ".jj", "repo")), 0o644); err != nil {
+		return fmt.Errorf("re-pointing jj workspace %s at %s: %w", workspacePath, repoDir, err)
+	}
+	return nil
+}
+
 func SetRemoteURL(ctx context.Context, run execx.Exec, timeout time.Duration, dir, url string) error {
 	if _, err := Run(ctx, run, timeout, dir, "git", "remote", "set-url", "origin", url); err != nil {
 		return fmt.Errorf("setting remote url for %s: %w", dir, err)

@@ -189,6 +189,19 @@ func LinkedWorktrees(ctx context.Context, run execx.Exec, timeout time.Duration,
 	return paths, nil
 }
 
+// RepairWorktrees re-points every worktree attached to dir after dir
+// itself has moved. A linked worktree's ".git" file names an absolute path
+// inside the clone, so moving the clone breaks all of them; git has a
+// first-party fix for exactly this, and it finds the worktrees itself from
+// the records inside the moved clone, so the caller does not have to have
+// captured their paths before the move.
+func RepairWorktrees(ctx context.Context, run execx.Exec, timeout time.Duration, dir string) error {
+	if _, err := execx.WithTimeout(ctx, timeout, run, dir, "git", "worktree", "repair"); err != nil {
+		return fmt.Errorf("repairing worktrees of %s: %w", dir, err)
+	}
+	return nil
+}
+
 func SetRemoteURL(ctx context.Context, run execx.Exec, timeout time.Duration, dir, url string) error {
 	if _, err := execx.WithTimeout(ctx, timeout, run, dir, "git", "remote", "set-url", "origin", "--", url); err != nil {
 		return fmt.Errorf("setting remote url for %s: %w", dir, err)

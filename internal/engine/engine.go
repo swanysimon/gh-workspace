@@ -390,11 +390,12 @@ func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State, con
 // fixupRename moves a renamed repo's directory and state entry without an
 // orphaned directory plus a full re-clone.
 //
-// AIDEV: moving the directory breaks any working copy linked to it -- a git
+// Moving the directory breaks every working copy linked to it (a git
 // worktree's .git file and a jj workspace's .jj/repo both name the old
-// path, and jj's is relative, so it breaks even if the whole root moves
-// together; upgrade path is re-pointing each linked working copy after the
-// move.
+// location), so they are re-pointed immediately afterward. That failing is
+// a warning, not an error: the rename itself already succeeded, and the
+// repo is usable -- it is the worktrees elsewhere on disk that need a
+// human, and saying so beats failing a sync that did its job.
 func fixupRename(ctx context.Context, env Env, st store.State, oldName string, repo ghcli.Repo, stderr io.Writer) {
 	if !renameApplies(env, oldName, repo.Name) {
 		return
@@ -407,6 +408,9 @@ func fixupRename(ctx context.Context, env Env, st store.State, oldName string, r
 	}
 	st.Repos[repo.Name] = st.Repos[oldName]
 	delete(st.Repos, oldName)
+	if err := vcs.RepairWorktrees(ctx, env.Exec, env.Settings.Timeout, newDir); err != nil {
+		fmt.Fprintf(stderr, "warning: renamed %q to %q, but could not re-point its worktrees: %v\n", oldName, repo.Name, err)
+	}
 	if url := ghcli.CloneURL(repo, env.Settings.Protocol); url != "" {
 		if err := vcs.SetRemoteURL(ctx, env.Exec, env.Settings.Timeout, newDir, url); err != nil {
 			fmt.Fprintf(stderr, "warning: could not update remote url for renamed repo %q: %v\n", repo.Name, err)

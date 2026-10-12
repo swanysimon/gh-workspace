@@ -2129,13 +2129,9 @@ passed:
 
 ### Known limitations, accepted
 
-- **Renaming a repo upstream breaks its linked jj workspaces.**
-  `fixupRename` moves the central clone's directory, and a jj workspace's
-  `.jj/repo` is a relative path, so it breaks (`Cannot access
-  ../../<old>/.jj/repo`). Git worktrees already break the same way today,
-  so this is a pre-existing limitation widened, not a new one: recorded as
-  an `AIDEV:` comment on `fixupRename` naming the upgrade path (re-point
-  each workspace after the move).
+- ~~**Renaming a repo upstream breaks its linked jj workspaces.**~~ Fixed
+  in Phase 7 below, for git worktrees as well — it turned out both kinds
+  are repairable, so neither has to be destroyed to survive a rename.
 - **A jj workspace is not a git repo.** `jj workspace add` has no
   `--colocate`, so git-only tooling inside a worktree works only for
   git-backed repos. Documented, not worked around.
@@ -2144,6 +2140,63 @@ passed:
   pre-checked.
 - No conversion in the other direction (jj clone back to git-only).
   `rm -rf .jj` is the user's own one-liner.
+
+## Phase 7 — Renames and upstream deletions
+
+Two things Phase 6 left: the rename limitation it recorded, and what to do
+about a repo that stops resolving upstream.
+
+### Decisions
+
+- [x] **A rename repairs its working copies; it does not delete or
+      re-clone them.** The question that started this was whether a rename
+      should just be a deletion plus a re-clone, reusing the
+      confirm-and-remove-worktrees guard archiving already has. It should
+      not: archiving prompts because the clone genuinely goes away, while a
+      rename only *moves* it, and both kinds turn out to be repairable
+      without touching the user's work. A re-clone would also re-download
+      full history, which `fixupRename` exists to avoid.
+- [x] Verified before building: `git worktree repair`, run in the moved
+      clone, fixes every broken worktree (first-party, and it finds them
+      itself from the records inside the moved clone). jj has no `repair`
+      — `workspace update-stale` is a different thing, a stale working-copy
+      *commit* — but writing `<workspace>/.jj/repo` as an absolute path
+      pointing at the moved clone restores it completely, and the repo side
+      still lists the workspace correctly afterward.
+- [x] Neither kind needs its working copies enumerated *before* the move: a
+      moved clone still knows them (`git worktree repair` with no
+      arguments; `jj workspace list` still reports absolute roots). So
+      `RepairWorktrees` takes only the clone's new location.
+
+### Steps
+
+- [x] jj: `jj new -m "fix(rename): repair linked working copies after a
+      clone moves"`.
+  - [x] `gitcli.RepairWorktrees` (`git worktree repair`),
+        `jjcli.RepairWorkspace` (writes the `.jj/repo` pointer — the one
+        place in that package that touches jj's own state instead of
+        running jj, flagged as such in its doc comment), and
+        `vcs.RepairWorktrees` dispatching between them.
+  - [x] `engine.fixupRename` calls it right after the directory move. A
+        repair failure is a **warning**, not an error: the rename itself
+        succeeded and the repo is usable, so failing the sync would
+        misreport a run that did its job. The old `AIDEV:` comment naming
+        this as an upgrade path is gone, replaced by what it now does.
+  - [x] Tests: `vcs` repairs a real moved clone for both kinds, with a
+        precondition asserting the working copy really is broken first so
+        the repair can't pass vacuously; and `engine` drives the whole
+        rename through `BuildTasks` (matched by repo ID, as a real rename
+        is) for both kinds, asserting the directory moved, the old one is
+        gone, the working copy still works, and it is still attached —
+        neither deleted nor re-cloned.
+  - [x] `README.md`/`AGENTS.md` updated: the rename no longer breaks
+        worktrees.
+
+### Still open
+
+- [ ] **Repos deleted upstream.** Chosen as the next thing to handle, but
+      the semantics are not settled yet — see the question recorded below,
+      which is waiting on an answer rather than on code.
 
 ## Open questions (resolved)
 

@@ -458,3 +458,48 @@ func TestFetchAndUpdateWorkingCopyDispatch(t *testing.T) {
 		})
 	}
 }
+
+// Moving a clone breaks every working copy attached to it, which is what a
+// renamed-upstream repo does. Both kinds are repairable without touching
+// the user's work, so neither has to be destroyed to survive a rename.
+func TestRepairWorktreesAfterTheCloneMoves(t *testing.T) {
+	requireJJ(t)
+	for _, kind := range []Kind{Git, JJ} {
+		t.Run(string(kind), func(t *testing.T) {
+			dir := clone(t, kind)
+			ctx := context.Background()
+			wt := filepath.Join(t.TempDir(), "wt")
+			if _, err := WorktreeAdd(ctx, execx.Run, testTimeout, dir, wt, "existing", "main"); err != nil {
+				t.Fatalf("WorktreeAdd: %v", err)
+			}
+
+			moved := filepath.Join(filepath.Dir(dir), "renamed")
+			if err := os.Rename(dir, moved); err != nil {
+				t.Fatal(err)
+			}
+
+			// Precondition: the working copy really is broken by the move,
+			// so a passing repair below isn't vacuous. Both kinds fail the
+			// same way -- the VCS can't find its repo from the worktree.
+			if _, err := IsDirty(ctx, execx.Run, testTimeout, wt); err == nil {
+				t.Fatal("precondition: the working copy should be broken after the move")
+			}
+
+			if err := RepairWorktrees(ctx, execx.Run, testTimeout, moved); err != nil {
+				t.Fatalf("RepairWorktrees: %v", err)
+			}
+
+			// The working copy works again, and the clone still knows it.
+			if _, err := IsDirty(ctx, execx.Run, testTimeout, wt); err != nil {
+				t.Errorf("working copy still broken after repair: %v", err)
+			}
+			got, err := Worktrees(ctx, execx.Run, testTimeout, moved)
+			if err != nil {
+				t.Fatalf("Worktrees: %v", err)
+			}
+			if len(got) != 1 || resolvePath(got[0].Path) != resolvePath(wt) {
+				t.Errorf("got %v, want one worktree at %s", got, wt)
+			}
+		})
+	}
+}

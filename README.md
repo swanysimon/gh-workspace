@@ -253,6 +253,9 @@ everything under it — pass `--root` explicitly if that matters to you. Worktre
 - **A dirty working tree is never touched.** If a clone has uncommitted changes, this tool still fetches
   refs but leaves the checkout alone, warns, and will keep warning on every future run instead of ever
   fast-forwarding or archiving over your local edits.
+- **A renamed repo keeps its worktrees.** A repo renamed upstream has its clone's directory moved, not
+  re-cloned, and every worktree attached to it is re-pointed at the new location afterward (`git worktree
+  repair`, or the jj equivalent) — nothing is deleted and no history is re-downloaded.
 - **Nothing is ever deleted because it's missing upstream or untracked.** A repo that disappears from an
   org listing (renamed, deleted, or just no longer visible to your token), or one that's removed from the
   config without ever being explicitly tracked, is reported, never removed locally — absence looks

@@ -16,6 +16,7 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/plan"
 	"github.com/swanysimon/gh-workspace/internal/settings"
 	"github.com/swanysimon/gh-workspace/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
 var errFakeFailure = errors.New("fake failure")
@@ -763,5 +764,66 @@ func TestBuildExplicitTasksUsesThePerRepoVCS(t *testing.T) {
 
 	if len(tasks) != 1 || tasks[0].VCS != "jj" {
 		t.Fatalf("got %+v, want one task with VCS \"jj\"", tasks)
+	}
+}
+
+// A repo renamed upstream moves its clone's directory, which breaks every
+// working copy attached to it. The rename is matched by repo ID, so this
+// drives the whole BuildTasks path rather than fixupRename directly.
+func TestBuildTasksRenameRepairsLinkedWorktrees(t *testing.T) {
+	requireJJ(t)
+	for _, kind := range []string{"git", "jj"} {
+		t.Run(kind, func(t *testing.T) {
+			origin := initTestRepo(t)
+			env := testEnv(t)
+			env.Settings.VCS = kind
+			ctx := context.Background()
+
+			// Clone under the old name, with a working copy attached.
+			old := ghcli.Repo{
+				ID: "R1", Name: "oldname", NameWithOwner: "shimorg/oldname",
+				URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+			}
+			if _, err := SyncOne(ctx, env, old, true, os.Stderr); err != nil {
+				t.Fatalf("SyncOne: %v", err)
+			}
+			oldDir := filepath.Join(env.ReposDir(), "oldname")
+			wt := filepath.Join(t.TempDir(), "wt")
+			// A new branch, not "main": the central clone already has the
+			// default branch checked out, and git won't hand the same
+			// branch to two worktrees.
+			if _, err := vcs.WorktreeAdd(ctx, env.Exec, testTimeout, oldDir, wt, "feature", "main"); err != nil {
+				t.Fatalf("WorktreeAdd: %v", err)
+			}
+
+			// Same ID, new name: that is how a rename is recognized.
+			renamed := old
+			renamed.Name = "newname"
+			renamed.NameWithOwner = "shimorg/newname"
+			st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+			if _, _, failed := BuildTasks(ctx, env, []ghcli.Repo{renamed}, st, os.Stderr); failed != 0 {
+				t.Fatalf("%d repos failed to plan", failed)
+			}
+
+			newDir := filepath.Join(env.ReposDir(), "newname")
+			if _, err := os.Stat(newDir); err != nil {
+				t.Fatalf("clone was not moved to the new name: %v", err)
+			}
+			if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+				t.Errorf("old directory should be gone, stat err = %v", err)
+			}
+			// The point of the phase: the worktree still works, and was
+			// neither deleted nor re-cloned.
+			if _, err := vcs.IsDirty(ctx, env.Exec, testTimeout, wt); err != nil {
+				t.Errorf("worktree was not repaired after the rename: %v", err)
+			}
+			got, err := vcs.Worktrees(ctx, env.Exec, testTimeout, newDir)
+			if err != nil {
+				t.Fatalf("Worktrees: %v", err)
+			}
+			if len(got) != 1 {
+				t.Errorf("got %v, want the one worktree still attached", got)
+			}
+		})
 	}
 }

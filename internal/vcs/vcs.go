@@ -296,6 +296,32 @@ func WorktreeRemove(ctx context.Context, run execx.Exec, timeout time.Duration, 
 	return fmt.Errorf("%s is not a jj workspace of %s", path, dir)
 }
 
+// RepairWorktrees re-points every working copy attached to the clone at
+// dir after dir itself has moved, which breaks all of them: a git
+// worktree's ".git" file names an absolute path inside the clone, and a jj
+// workspace's ".jj/repo" names a relative one. Neither kind needs its
+// paths captured before the move -- the moved clone still knows its own
+// working copies -- so this takes only the clone's new location.
+//
+// A renamed repo is the one case that moves a clone, and it does not need
+// to destroy anything to do it, unlike archiving (where the clone really
+// does go away, which is why that path prompts instead).
+func RepairWorktrees(ctx context.Context, run execx.Exec, timeout time.Duration, dir string) error {
+	if Detect(dir) != JJ {
+		return gitcli.RepairWorktrees(ctx, run, timeout, dir)
+	}
+	workspaces, err := jjcli.Workspaces(ctx, run, timeout, dir)
+	if err != nil {
+		return err
+	}
+	for _, w := range workspaces {
+		if err := jjcli.RepairWorkspace(w.Path, dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WorktreeListText is the VCS's own listing output, passed through rather
 // than reformatted: a user asking to list worktrees is asking what their
 // VCS says about them.
