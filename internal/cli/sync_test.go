@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -445,11 +446,20 @@ func TestRunSyncWorkspaceInStateNotInListingNote(t *testing.T) {
 		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
 	}
 
-	if strings.Contains(stderr.String(), "myorg/forkrepo is in local state but was not returned") {
-		t.Fatalf("forkrepo is explicitly tracked; it must get a real decision, not just the generic note: %q", stderr.String())
+	if strings.Contains(stderr.String(), "myorg/forkrepo: no longer resolves upstream") {
+		t.Fatalf("forkrepo is explicitly tracked; it must get a real decision, not a missing-upstream report: %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "myorg/gone is in local state but was not returned by gh repo list") {
-		t.Fatalf("gone (not tracked, not in listing) should get the generic note: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "myorg/gone: no longer resolves upstream") {
+		t.Fatalf("gone (not tracked, not in listing) should be reported as missing: %q", stderr.String())
+	}
+	// Reported, never acted on without --archive-missing.
+	if _, err := os.Stat(tarballPath(cfg, "gone")); !os.IsNotExist(err) {
+		t.Errorf("a missing repo must not be archived without --archive-missing, stat err = %v", err)
+	}
+	// The first sighting is recorded, so a later run can say how long.
+	after := loadState(statePath(cfg), "myorg", io.Discard)
+	if after.Repos["gone"].MissingSince.IsZero() {
+		t.Errorf("missingSince was not recorded: %+v", after.Repos["gone"])
 	}
 	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "forkrepo", ".git")); err != nil {
 		t.Fatalf("forkrepo should have been cloned via the explicit path despite being a fork: %v", err)
@@ -603,5 +613,134 @@ func TestRunSyncWorkspacePrintsMigrationNoticeOnce(t *testing.T) {
 
 	if got := strings.Count(stderr.String(), "migrated state file"); got != 1 {
 		t.Fatalf("migration notice printed %d times, want exactly 1; stderr=%q", got, stderr.String())
+	}
+}
+
+// --archive-missing is the opt-in action for a repo that stopped
+// resolving: the clone is tarballed, never deleted, and the record of when
+// it went missing survives.
+func TestRunSyncArchiveMissingTarballsTheClone(t *testing.T) {
+	origin := initTestRepo(t)
+
+	fake := newFakeGhForSync()
+	// The repo is cloned by the first run, then vanishes from the listing.
+	fake.listingsByOwner["myorg"] = repoListJSON(t, []ghRepo{{
+		ID: "R1", Name: "repo1", NameWithOwner: "myorg/repo1",
+		URL: "file://" + origin, SSHURL: "file://" + origin,
+		DefaultBranch: &ghRefName{Name: "main"},
+		PushedAt:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}})
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = fake.exec
+
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Owner = "myorg"
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{"owners":[{"name":"myorg"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"sync", "--root", root, "--protocol", "https", "--config", configFile}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), args, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("first Run() = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "repo1", ".git")); err != nil {
+		t.Fatalf("repo should have been cloned: %v", err)
+	}
+
+	// Now it's gone upstream. Without the flag: reported, untouched.
+	fake.listingsByOwner["myorg"] = repoListJSON(t, []ghRepo{})
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), args, &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("second Run() = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no longer resolves upstream") {
+		t.Errorf("expected a missing-upstream report: %q", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "repo1", ".git")); err != nil {
+		t.Fatalf("clone must survive a run without --archive-missing: %v", err)
+	}
+
+	// With the flag: tarballed, clone gone, record kept.
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), append(args, "--archive-missing"), &stdout, &stderr); code != exitSuccess {
+		t.Fatalf("third Run() = %d, stderr=%s", code, stderr.String())
+	}
+	if _, err := os.Stat(tarballPath(cfg, "repo1")); err != nil {
+		t.Errorf("tarball missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "repo1")); !os.IsNotExist(err) {
+		t.Errorf("clone should be gone, stat err = %v", err)
+	}
+	after := loadState(statePath(cfg), "myorg", io.Discard)
+	rs := after.Repos["repo1"]
+	if rs.Status != statusArchived {
+		t.Errorf("Status = %q, want archived", rs.Status)
+	}
+	if rs.MissingSince.IsZero() {
+		t.Errorf("missingSince should survive the archive: %+v", rs)
+	}
+}
+
+// The data-destroying trap: a fork excluded by includeForks was returned
+// by the listing, so --archive-missing must never touch it.
+func TestRunSyncArchiveMissingLeavesFilteredForksAlone(t *testing.T) {
+	origin := initTestRepo(t)
+
+	fake := newFakeGhForSync()
+	forkListing := repoListJSON(t, []ghRepo{{
+		ID: "RFORK", Name: "forkrepo", NameWithOwner: "myorg/forkrepo",
+		URL: "file://" + origin, SSHURL: "file://" + origin, IsFork: true,
+		DefaultBranch: &ghRefName{Name: "main"},
+		PushedAt:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}})
+	fake.listingsByOwner["myorg"] = forkListing
+	old := execDefault
+	t.Cleanup(func() { execDefault = old })
+	execDefault = fake.exec
+
+	root := t.TempDir()
+	cfg := testConfig(t, root)
+	cfg.Owner = "myorg"
+	mustMkReposDir(t, cfg)
+	// Cloned earlier, when forks were included; now they are not.
+	if err := cloneRepo(context.Background(), cfg, ghRepo{
+		Name: "forkrepo", URL: "file://" + origin, SSHURL: "file://" + origin,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := state{Version: stateVersion, Org: "myorg", Repos: map[string]repoState{
+		"forkrepo": {ID: "RFORK", Status: statusCloned},
+	}}
+	if err := saveState(statePath(cfg), st); err != nil {
+		t.Fatal(err)
+	}
+
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configFile, []byte(`{"owners":[{"name":"myorg"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"sync", "--root", root, "--protocol", "https", "--config", configFile, "--archive-missing",
+	}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("Run() = %d, stderr=%s", code, stderr.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "myorg", "repos", "forkrepo", ".git")); err != nil {
+		t.Fatalf("an excluded fork was returned by the listing and must not be archived: %v", err)
+	}
+	if _, err := os.Stat(tarballPath(cfg, "forkrepo")); !os.IsNotExist(err) {
+		t.Errorf("no tarball should exist for a filtered fork, stat err = %v", err)
+	}
+	if strings.Contains(stderr.String(), "no longer resolves upstream") {
+		t.Errorf("a filtered fork is not missing upstream: %q", stderr.String())
 	}
 }

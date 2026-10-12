@@ -80,7 +80,7 @@ func TestSettingsTableConfigKeysMatchFileConfig(t *testing.T) {
 // on: which commands accept which settings, matching the sync/worktree
 // surface documented in AIDEV.md and the README.
 func TestSettingsFor(t *testing.T) {
-	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes", "tracked-only"}
+	syncOnly := []string{"concurrency", "max-repos", "include-forks", "dry-run", "verbose", "yes", "tracked-only", "archive-missing"}
 	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
 	worktreeOnly := []string{"worktree-root", "worktree-path"}

@@ -827,3 +827,180 @@ func TestBuildTasksRenameRepairsLinkedWorktrees(t *testing.T) {
 		})
 	}
 }
+
+// cloneForMissing puts a real clone and a state entry in place for name,
+// as a previous sync would have left them.
+func cloneForMissing(t *testing.T, env Env, name string, prev store.RepoState) store.State {
+	t.Helper()
+	origin := initTestRepo(t)
+	repo := ghcli.Repo{
+		ID: prev.ID, Name: name, NameWithOwner: env.Owner + "/" + name,
+		URL: "file://" + origin, PushedAt: prev.PushedAt, DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	rs := st.Repos[name]
+	rs.MissingSince = prev.MissingSince
+	st.Repos[name] = rs
+	return st
+}
+
+func TestMissingTasksReportsWithoutArchiveMissing(t *testing.T) {
+	env := testEnv(t)
+	st := cloneForMissing(t, env, "repo1", store.RepoState{ID: "R1", PushedAt: time.Now()})
+
+	tasks := MissingTasks(env, st, map[string]bool{}, nil)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0].Action != plan.MissingUpstream {
+		t.Errorf("Action = %q, want %q", tasks[0].Action, plan.MissingUpstream)
+	}
+	if !strings.Contains(tasks[0].Reason, "first seen missing on this run") {
+		t.Errorf("reason = %q", tasks[0].Reason)
+	}
+
+	// Running it records the date without touching the clone.
+	res := RunTasks(context.Background(), env, tasks, os.Stderr)
+	if len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("RunTasks: %+v", res)
+	}
+	if res[0].MissingSince.IsZero() {
+		t.Error("MissingSince was not stamped")
+	}
+	if _, err := os.Stat(filepath.Join(env.ReposDir(), "repo1", ".git")); err != nil {
+		t.Errorf("the clone must be left alone: %v", err)
+	}
+}
+
+// On a later run the report says how long, which is the whole reason the
+// date is recorded: GitHub can't say *why* a repo stopped resolving.
+func TestMissingTasksReportsHowLongWhenAlreadyKnown(t *testing.T) {
+	env := testEnv(t)
+	since := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	st := cloneForMissing(t, env, "repo1", store.RepoState{ID: "R1", PushedAt: time.Now(), MissingSince: since})
+
+	tasks := MissingTasks(env, st, map[string]bool{}, nil)
+	if len(tasks) != 1 || !strings.Contains(tasks[0].Reason, "missing since 2026-03-04") {
+		t.Fatalf("reason = %q", tasks[0].Reason)
+	}
+
+	res := RunTasks(context.Background(), env, tasks, os.Stderr)
+	if len(res) != 1 || !res[0].MissingSince.Equal(since) {
+		t.Fatalf("MissingSince = %v, want it preserved as %v", res[0].MissingSince, since)
+	}
+}
+
+func TestMissingTasksArchivesTheCloneWhenAsked(t *testing.T) {
+	env := testEnv(t)
+	env.Settings.ArchiveMissing = true
+	since := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	st := cloneForMissing(t, env, "repo1", store.RepoState{ID: "R1", PushedAt: time.Now(), MissingSince: since})
+
+	tasks := MissingTasks(env, st, map[string]bool{}, nil)
+	if len(tasks) != 1 || tasks[0].Action != plan.Archive {
+		t.Fatalf("got %+v, want one Archive task", tasks)
+	}
+	if !strings.Contains(tasks[0].Reason, "archiving the local clone") {
+		t.Errorf("reason = %q", tasks[0].Reason)
+	}
+
+	res := RunTasks(context.Background(), env, tasks, os.Stderr)
+	if len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("RunTasks: %+v", res)
+	}
+	// Data preserved as an archive, working tree reclaimed, nothing
+	// deleted outright.
+	if _, err := os.Stat(archive.TarballPath(env.ArchivesDir(), "repo1")); err != nil {
+		t.Errorf("tarball missing: %v", err)
+	}
+	m, ok := archive.ReadManifest(archive.ManifestPath(env.ArchivesDir(), "repo1"))
+	if !ok {
+		t.Fatal("manifest missing")
+	}
+	if m.NameWithOwner != "shimorg/repo1" {
+		t.Errorf("manifest.NameWithOwner = %q", m.NameWithOwner)
+	}
+	// No default branch was known, so the head commit came from HEAD --
+	// the manifest still records real history rather than nothing.
+	if m.HeadSHA == "" {
+		t.Error("manifest recorded no head commit")
+	}
+	if _, err := os.Stat(filepath.Join(env.ReposDir(), "repo1")); !os.IsNotExist(err) {
+		t.Errorf("clone should be gone after archiving, stat err = %v", err)
+	}
+	if res[0].Status != store.StatusArchived {
+		t.Errorf("Status = %q, want archived", res[0].Status)
+	}
+	if !res[0].MissingSince.Equal(since) {
+		t.Errorf("MissingSince = %v, want it kept as %v", res[0].MissingSince, since)
+	}
+}
+
+// With no local clone there is nothing to archive, so the repo is only
+// ever reported -- even with the flag.
+func TestMissingTasksOnlyReportsWhenThereIsNoClone(t *testing.T) {
+	env := testEnv(t)
+	env.Settings.ArchiveMissing = true
+	st := store.State{Repos: map[string]store.RepoState{
+		"repo1": {ID: "R1", Status: store.StatusArchived},
+	}}
+
+	tasks := MissingTasks(env, st, map[string]bool{}, nil)
+	if len(tasks) != 1 || tasks[0].Action != plan.MissingUpstream {
+		t.Fatalf("got %+v, want one MissingUpstream task", tasks)
+	}
+}
+
+// The trap this function exists to avoid: a fork excluded by
+// includeForks, an invalid name and a case-collision are all absent from
+// BuildTasks' "seen" even though GitHub returned them. Keying off the raw
+// listing instead means --archive-missing can never tarball them.
+func TestMissingTasksIgnoresReposTheListingReturned(t *testing.T) {
+	env := testEnv(t)
+	env.Settings.ArchiveMissing = true
+	st := store.State{Repos: map[string]store.RepoState{
+		"afork":    {ID: "R1", Status: store.StatusCloned},
+		"explicit": {ID: "R2", Status: store.StatusCloned},
+		"gone":     {ID: "R3", Status: store.StatusCloned},
+	}}
+
+	tasks := MissingTasks(env, st,
+		map[string]bool{"afork": true},    // returned, then filtered out
+		map[string]bool{"explicit": true}) // getting its own batched lookup
+	if len(tasks) != 1 || tasks[0].Repo.Name != "gone" {
+		t.Fatalf("got %+v, want only \"gone\"", tasks)
+	}
+}
+
+// A repo that resolves again has the record cleared by the same state
+// write that records its sync -- no separate bookkeeping.
+func TestSyncOneClearsMissingSinceWhenARepoComesBack(t *testing.T) {
+	env := testEnv(t)
+	origin := initTestRepo(t)
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	st := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	rs := st.Repos["repo1"]
+	rs.MissingSince = time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	rs.PushedAt = time.Time{} // force a fetch rather than a skip
+	st.Repos["repo1"] = rs
+	if err := store.SaveState(env.StatePath(), st); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("second SyncOne: %v", err)
+	}
+	after := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
+	if !after.Repos["repo1"].MissingSince.IsZero() {
+		t.Errorf("MissingSince = %v, want it cleared", after.Repos["repo1"].MissingSince)
+	}
+}

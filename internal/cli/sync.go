@@ -342,18 +342,18 @@ func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictO
 						delete(remaining, name)
 					}
 				}
-				// Mirrors runSingleOwnerSync's own "in state but not in
-				// listing" note -- but it must not fire for a name still
-				// in remaining: that name is explicitly tracked and the
-				// owner's filter (e.g. a fork with includeForks=false)
-				// excluded it from the listing, so it is about to get a
-				// real decision of its own via BuildExplicitTasks, not
-				// just a note. See AIDEV.md's invariant about this.
-				for name := range st.Repos {
-					if !seen[name] && !remaining[name] {
-						fmt.Fprintf(stderr, "note: %s/%s is in local state but was not returned by gh repo list; leaving any local data untouched\n", owner, name)
-					}
+				// Repos in state the listing never mentioned, as in
+				// runSingleOwnerSync -- but skipping any name still in
+				// remaining, which is explicitly tracked and about to get
+				// a real decision of its own via BuildExplicitTasks. The
+				// listing is the input here, not buildTasks' "seen",
+				// which excludes filtered-out forks and skipped names:
+				// those were returned by GitHub and are not missing.
+				listed := make(map[string]bool, len(repos))
+				for _, r := range repos {
+					listed[r.Name] = true
 				}
+				plan.tasks = append(plan.tasks, engine.MissingTasks(env, st, listed, remaining)...)
 			}
 		}
 

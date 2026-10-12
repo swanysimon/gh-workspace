@@ -52,6 +52,18 @@ type RepoState struct {
 	Status      Status    `json:"status"`
 	ArchivePath string    `json:"archivePath,omitempty"`
 	Tracked     bool      `json:"tracked"`
+	// MissingSince is the first run at which this repo stopped resolving
+	// upstream, and is zero whenever it resolves. GitHub cannot tell a
+	// deleted repo apart from one a token can no longer see -- it answers
+	// NOT_FOUND for both, deliberately, so it never leaks whether a
+	// private repo exists -- so this records *how long* rather than
+	// *why*: "gone since March" is worth a human's attention in a way
+	// "gone since this morning" is not. Nothing is ever deleted because
+	// of it.
+	// omitzero, not omitempty: omitempty does nothing for a struct type
+	// like time.Time, so a repo that has never gone missing would carry a
+	// "0001-01-01T00:00:00Z" in every state file.
+	MissingSince time.Time `json:"missingSince,omitzero"`
 }
 
 func OwnerDir(root, owner string) string    { return filepath.Join(root, owner) }

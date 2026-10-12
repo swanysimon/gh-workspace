@@ -66,6 +66,7 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"      --archive            tarball archived repos and remove their clones\n" +
 		"      --force              ignore stored pushedAt and re-sync every repo\n" +
 		"      --tracked-only       skip owner listings; refresh only repos already present locally or in state\n" +
+		"      --archive-missing    tarball the clones of repos that no longer resolve upstream (never deletes)\n" +
 		"      --dry-run            print the planned actions without doing them\n" +
 		"  -v, --verbose            verbose output\n" +
 		"      --yes                don't prompt before removing worktrees to archive a repo they belong to\n" +

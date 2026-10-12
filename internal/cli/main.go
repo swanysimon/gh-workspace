@@ -145,16 +145,19 @@ func runSingleOwnerSync(ctx context.Context, cfg config, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "warning: gh repo list returned %d repos, the --max-repos limit; the listing may be truncated, raise --max-repos to be sure\n", len(repos))
 	}
 
-	tasks, seen, prepassFailed := buildTasks(ctx, cfg, repos, st, stderr)
+	tasks, _, prepassFailed := buildTasks(ctx, cfg, repos, st, stderr)
 
-	// AIDEV: absence from the listing is indistinguishable from lost access
-	// to a private repo, so we only ever report it and never delete local
-	// data; upgrade path is an opt-in -prune flag.
-	for name := range st.Repos {
-		if !seen[name] {
-			fmt.Fprintf(stderr, "note: %q is in local state but was not returned by gh repo list; leaving any local data untouched\n", name)
-		}
+	// Repos in state that the listing never mentioned get a task of their
+	// own, so they are reported (and, with --archive-missing, acted on)
+	// through the same result loop as everything else. "listed" is built
+	// from the raw listing rather than from buildTasks' "seen", which
+	// excludes filtered-out forks and skipped names -- those were
+	// returned by GitHub and must never count as missing.
+	listed := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		listed[r.Name] = true
 	}
+	tasks = append(tasks, engine.MissingTasks(buildEnv(cfg), st, listed, nil)...)
 
 	if cfg.DryRun {
 		for _, t := range tasks {
@@ -316,6 +319,7 @@ func usageFlags(d config) []flagHelp {
 		{long: "archive", usage: "tarball archived repos and remove their clones"},
 		{long: "force", usage: "ignore stored pushedAt and re-sync every repo"},
 		{long: "tracked-only", usage: "skip owner listings; refresh only repos already present locally or in state"},
+		{long: "archive-missing", usage: "tarball the clones of repos that no longer resolve upstream (never deletes)"},
 		{long: "dry-run", usage: "print the planned actions without doing them"},
 		{long: "verbose", shorthand: "v", usage: "verbose output"},
 		{long: "yes", usage: "don't prompt before removing worktrees to archive a repo they belong to"},

@@ -51,6 +51,13 @@ type Settings struct {
 	// key -- it's a per-invocation choice about this run's shape, not a
 	// persistent setting. See AIDEV.md's "sync --tracked-only."
 	TrackedOnly bool
+	// ArchiveMissing is sync-only and flag-only, like Force and
+	// TrackedOnly: a per-invocation decision to act on repos that no
+	// longer resolve upstream by tarballing their clones (never deleting
+	// them). It has no env var or config key deliberately -- a setting
+	// that quietly removes working trees on every scheduled run is not
+	// something to leave switched on in a file.
+	ArchiveMissing bool
 	// WorktreeRoot is "" by default, meaning "the current directory when
 	// the command runs" -- a dynamic default resolved by the caller
 	// (cmdWorktreeAdd), not by Default() below, since Default() has no
@@ -604,6 +611,11 @@ var settingsTable = []Setting{
 		flagName: "tracked-only", kind: kindBool, usage: "skip owner listings; refresh only repos already present locally or in state",
 		commands: inCmd(CmdSync),
 		apply:    func(s *Settings, v any) { s.TrackedOnly = v.(bool) },
+	},
+	{
+		flagName: "archive-missing", kind: kindBool, usage: "tarball the clones of repos that no longer resolve upstream (never deletes)",
+		commands: inCmd(CmdSync),
+		apply:    func(s *Settings, v any) { s.ArchiveMissing = v.(bool) },
 	},
 	{
 		flagName: "dry-run", kind: kindBool, usage: "print the planned actions without doing them",

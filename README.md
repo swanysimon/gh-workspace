@@ -155,6 +155,7 @@ Precedence is **flags > environment > config file > defaults**.
 | `--worktree-path` | `GH_WORKSPACE_WORKTREE_PATH` | `worktreePath` | `{repo}` | worktree path template (`{owner}`, `{repo}`, `{branch}`) under `worktreeRoot` |
 | `--force` | — | — | `false` | ignore stored `pushedAt`, re-sync every repo |
 | `--tracked-only` | — | — | `false` | skip owner listings; refresh only repos already present locally or in state |
+| `--archive-missing` | — | — | `false` | tarball the clones of repos that no longer resolve upstream (never deletes) |
 | `--dry-run` | — | — | `false` | print planned actions, do nothing |
 | `-v`, `--verbose` | — | — | `false` | verbose output (e.g. reports skipped forks) |
 | `--yes` | — | — | `false` | don't prompt before removing worktrees to archive a repo they belong to |
@@ -259,7 +260,15 @@ everything under it — pass `--root` explicitly if that matters to you. Worktre
 - **Nothing is ever deleted because it's missing upstream or untracked.** A repo that disappears from an
   org listing (renamed, deleted, or just no longer visible to your token), or one that's removed from the
   config without ever being explicitly tracked, is reported, never removed locally — absence looks
-  identical to lost access.
+  identical to lost access. GitHub answers `NOT_FOUND` the same way for a deleted repo and for one your
+  token can no longer see, deliberately, so it never leaks whether a private repo exists; this tool
+  therefore records *how long* a repo has been unresolvable (`missingSince` in `state.json`) and reports
+  it, rather than guessing why. `--archive-missing` is the opt-in action: it tarballs those clones
+  through the same path an archived-upstream repo takes — manifest, worktree prompt and all — so the
+  history survives as an archive and only the working tree is reclaimed. It still never deletes, which
+  is what makes it recoverable if the real cause was an expired token: untar it, or just re-sync once
+  access is back. A repo the listing *did* return but that was filtered out (a fork under
+  `includeForks: false`) is never treated as missing.
 - **Archiving a repo with a live `git worktree` asks first.** Deleting a repo's clone out from under a
   linked worktree elsewhere would permanently break that worktree with no clean recovery, so a sync run
   stops and asks before removing any worktree to proceed with archiving — and, on an unattended run (no

@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,12 +156,13 @@ func SyncOne(ctx context.Context, env Env, repo ghcli.Repo, explicit bool, stder
 		id = prev.ID
 	}
 	st.Repos[repo.Name] = store.RepoState{
-		ID:          id,
-		PushedAt:    res.PushedAt,
-		SyncedAt:    time.Now(),
-		Status:      res.Status,
-		ArchivePath: res.ArchivePath,
-		Tracked:     explicit || prev.Tracked,
+		ID:           id,
+		PushedAt:     res.PushedAt,
+		SyncedAt:     time.Now(),
+		Status:       res.Status,
+		ArchivePath:  res.ArchivePath,
+		Tracked:      explicit || prev.Tracked,
+		MissingSince: res.MissingSince,
 	}
 	st.UpdatedAt = time.Now()
 	if err := store.SaveState(env.StatePath(), st); err != nil {
@@ -355,7 +357,7 @@ func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State, con
 			tasks = append(tasks, Task{
 				Repo:   ghcli.Repo{Name: r.Name},
 				Action: plan.MissingUpstream,
-				Reason: "explicitly tracked repo no longer resolves upstream (gone, renamed without a redirect, or no longer visible)",
+				Reason: missingReason(prev),
 				Prev:   prev,
 			})
 			continue
@@ -383,6 +385,81 @@ func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State, con
 			reason = "adopt the existing git clone into jj, then: " + reason
 		}
 		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt})
+	}
+	return tasks
+}
+
+// missingReason describes a repo that did not resolve upstream, including
+// how long that has been true. The cause is deliberately left open: GitHub
+// answers NOT_FOUND both for a deleted repo and for one the token can no
+// longer see, so claiming it was deleted would be a guess.
+func missingReason(prev store.RepoState) string {
+	const what = "no longer resolves upstream (gone, renamed without a redirect, or no longer visible)"
+	if prev.MissingSince.IsZero() {
+		return what + "; first seen missing on this run"
+	}
+	return fmt.Sprintf("%s; missing since %s", what, prev.MissingSince.Format(time.DateOnly))
+}
+
+// MissingTasks builds one task per repo that is in st but was not returned
+// by this owner's listing. listed is every name the listing returned
+// *before* any filtering, which is the distinction that matters: a fork
+// excluded by includeForks, a repo skipped for an invalid or colliding
+// name, and a repo GitHub never mentioned all look alike downstream of
+// BuildTasks, and treating a filtered-out fork as missing would tarball
+// every fork a workspace had ever cloned. explicit names the repos getting
+// their own batched lookup instead (see BuildExplicitTasks), which produce
+// their own MissingUpstream task and must not be double-counted here.
+//
+// With Settings.ArchiveMissing the clone is tarballed through exactly the
+// same path an archived-upstream repo takes -- manifest, worktree prompt
+// and all -- so the data survives as an archive and only the working tree
+// is reclaimed. Without it, the task only reports. Either way nothing is
+// deleted, and a repo with no local clone has nothing to act on, so it is
+// only ever reported.
+func MissingTasks(env Env, st store.State, listed, explicit map[string]bool) []Task {
+	names := make([]string, 0, len(st.Repos))
+	for name := range st.Repos {
+		if !listed[name] && !explicit[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names) // deterministic output and tests
+
+	tasks := make([]Task, 0, len(names))
+	for _, name := range names {
+		prev := st.Repos[name]
+		dir := filepath.Join(env.ReposDir(), name)
+		_, err := os.Stat(filepath.Join(dir, ".git"))
+		cloned := err == nil
+
+		if !env.Settings.ArchiveMissing || !cloned {
+			tasks = append(tasks, Task{
+				Repo:   ghcli.Repo{ID: prev.ID, Name: name},
+				Action: plan.MissingUpstream,
+				Reason: missingReason(prev),
+				Prev:   prev,
+			})
+			continue
+		}
+
+		// A synthetic ghcli.Repo built from what was last known: there is
+		// no upstream left to ask. The manifest records an empty URL and
+		// archivedAt rather than inventing either, and no default branch,
+		// which makes the head-commit lookup fall back to HEAD.
+		kind, _ := resolveVCS(dir, env.Settings.VCS, plan.Archive)
+		tasks = append(tasks, Task{
+			Repo: ghcli.Repo{
+				ID:            prev.ID,
+				Name:          name,
+				NameWithOwner: env.Owner + "/" + name,
+				PushedAt:      prev.PushedAt,
+			},
+			Action: plan.Archive,
+			Reason: missingReason(prev) + "; archiving the local clone",
+			Prev:   prev,
+			VCS:    kind,
+		})
 	}
 	return tasks
 }
@@ -585,12 +662,13 @@ func applyResultsToState(st *store.State, results []Result, tasksByName map[stri
 			id = t.Repo.ID
 		}
 		st.Repos[res.Name] = store.RepoState{
-			ID:          id,
-			PushedAt:    res.PushedAt,
-			SyncedAt:    time.Now(),
-			Status:      res.Status,
-			ArchivePath: res.ArchivePath,
-			Tracked:     st.Repos[res.Name].Tracked,
+			ID:           id,
+			PushedAt:     res.PushedAt,
+			SyncedAt:     time.Now(),
+			Status:       res.Status,
+			ArchivePath:  res.ArchivePath,
+			Tracked:      st.Repos[res.Name].Tracked,
+			MissingSince: res.MissingSince,
 		}
 	}
 	st.UpdatedAt = time.Now()
@@ -599,13 +677,14 @@ func applyResultsToState(st *store.State, results []Result, tasksByName map[stri
 // Result carries a worker's outcome. Errors travel in this struct, never
 // out of a worker, so one repo's failure can never abort another's work.
 type Result struct {
-	Name        string
-	Action      plan.Action
-	PushedAt    time.Time
-	Status      store.Status
-	ArchivePath string
-	Notes       []string
-	Err         error
+	Name         string
+	Action       plan.Action
+	PushedAt     time.Time
+	Status       store.Status
+	ArchivePath  string
+	MissingSince time.Time
+	Notes        []string
+	Err          error
 }
 
 // progressReporter prints one line per non-skip task as a worker picks it
@@ -797,6 +876,9 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 		res.PushedAt = rs.PushedAt
 		res.Status = rs.Status
 		res.ArchivePath = rs.ArchivePath
+		// Kept, not cleared: a repo archived *because* it vanished
+		// upstream should still say so once it is a tarball.
+		res.MissingSince = t.Prev.MissingSince
 		return res
 
 	case plan.Unarchive:
@@ -821,6 +903,14 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 		res.PushedAt = t.Prev.PushedAt
 		res.Status = t.Prev.Status
 		res.ArchivePath = t.Prev.ArchivePath
+		// Stamped on the first run it goes missing and preserved after
+		// that. Every other branch leaves MissingSince zero, so a repo
+		// that resolves again has the record cleared by the same state
+		// write that records its sync.
+		res.MissingSince = t.Prev.MissingSince
+		if res.MissingSince.IsZero() {
+			res.MissingSince = time.Now()
+		}
 		return res
 	}
 

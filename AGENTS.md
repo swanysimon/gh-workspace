@@ -72,7 +72,12 @@ SHA-256.
   exit would miss newly archived repositories (and renames, which are matched by repository ID, not name).
   `--force` ignores the stored state and re-syncs everything.
 - **Nothing is ever deleted because it's missing or untracked.** A repo absent from a listing, or dropped
-  from the config without ever being explicitly tracked, is reported, never removed locally.
+  from the config without ever being explicitly tracked, is reported, never removed locally. GitHub
+  answers `NOT_FOUND` identically for a deleted repo and one a token can't see, so the tool records
+  *how long* it has been unresolvable (`missingSince`) instead of guessing why, and `--archive-missing`
+  is the opt-in action: tarball the clone through the normal archive path, never delete it. "Missing"
+  means the listing never returned it — a repo it returned and a filter then excluded (a fork under
+  `includeForks: false`) is not missing.
 - **A dirty working tree is never touched.** Fetches still happen; the checkout itself is left alone.
 - **The user always specifies where a worktree lives** — where the command runs, a configured
   `worktreeRoot`/`worktreePath` template, or an explicit path are the only three ways a worktree's
