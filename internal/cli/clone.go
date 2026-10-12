@@ -123,9 +123,9 @@ func configTracks(fc *fileConfig, owner, repoName string) (reason string, tracke
 			return fmt.Sprintf("owners: %q", owner), true
 		}
 	}
-	for _, r := range fc.Repos {
-		if r == owner+"/"+repoName {
-			return fmt.Sprintf("repos: %q", r), true
+	for _, rc := range fc.Repos {
+		if rc.Name == owner+"/"+repoName {
+			return fmt.Sprintf("repos: %q", rc.Name), true
 		}
 	}
 	return "", false

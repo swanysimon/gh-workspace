@@ -84,6 +84,12 @@ func TestSettingsFor(t *testing.T) {
 	syncAndClone := []string{"archive", "force"}
 	shared := []string{"root", "timeout", "protocol"}
 	worktreeOnly := []string{"worktree-root", "worktree-path"}
+	// Settings for every command that can bring a clone into being --
+	// sync, clone, and "worktree add" (which clones first if needed) --
+	// but not "worktree remove"/"worktree list", which only ever act on
+	// a clone that already exists and therefore detect its VCS instead of
+	// being told.
+	clonesRepos := []string{"vcs"}
 
 	syncNames := flagNames(SettingsFor(CmdSync))
 	worktreeNames := flagNames(SettingsFor(CmdWorktree))
@@ -124,6 +130,20 @@ func TestSettingsFor(t *testing.T) {
 			t.Errorf("CmdClone unexpectedly accepts worktree-only setting %q", name)
 		}
 	}
+	for _, name := range clonesRepos {
+		if !syncNames[name] {
+			t.Errorf("CmdSync is missing setting %q", name)
+		}
+		if !cloneNames[name] {
+			t.Errorf("CmdClone is missing setting %q", name)
+		}
+		if !worktreeAddNames[name] {
+			t.Errorf("CmdWorktreeAdd is missing setting %q", name)
+		}
+		if worktreeNames[name] {
+			t.Errorf("CmdWorktree unexpectedly accepts setting %q", name)
+		}
+	}
 	for _, name := range syncAndClone {
 		if !syncNames[name] {
 			t.Errorf("CmdSync is missing setting %q", name)
@@ -146,16 +166,16 @@ func TestSettingsFor(t *testing.T) {
 			t.Errorf("CmdClone unexpectedly accepts sync-only setting %q", name)
 		}
 	}
-	if got, want := len(syncNames), len(syncOnly)+len(syncAndClone)+len(shared); got != want {
+	if got, want := len(syncNames), len(syncOnly)+len(syncAndClone)+len(shared)+len(clonesRepos); got != want {
 		t.Errorf("CmdSync has %d settings, want %d (unexpected extra entries)", got, want)
 	}
 	if got, want := len(worktreeNames), len(shared); got != want {
 		t.Errorf("CmdWorktree has %d settings, want %d (unexpected extra entries)", got, want)
 	}
-	if got, want := len(worktreeAddNames), len(shared)+len(worktreeOnly); got != want {
+	if got, want := len(worktreeAddNames), len(shared)+len(worktreeOnly)+len(clonesRepos); got != want {
 		t.Errorf("CmdWorktreeAdd has %d settings, want %d (unexpected extra entries)", got, want)
 	}
-	if got, want := len(cloneNames), len(syncAndClone)+len(shared); got != want {
+	if got, want := len(cloneNames), len(syncAndClone)+len(shared)+len(clonesRepos); got != want {
 		t.Errorf("CmdClone has %d settings, want %d (unexpected extra entries)", got, want)
 	}
 }
@@ -228,7 +248,7 @@ func TestLoadFileConfigAcceptsValidOwnersAndRepos(t *testing.T) {
 	if fc.Owners[1].Archive == nil || *fc.Owners[1].Archive {
 		t.Fatalf("Owners[1].Archive = %v, want false", fc.Owners[1].Archive)
 	}
-	if len(fc.Repos) != 2 || fc.Repos[0] != "someone/useful-lib" || fc.Repos[1] != "cli/cli" {
+	if len(fc.Repos) != 2 || fc.Repos[0].Name != "someone/useful-lib" || fc.Repos[1].Name != "cli/cli" {
 		t.Fatalf("Repos = %+v", fc.Repos)
 	}
 }
@@ -331,4 +351,98 @@ func TestApplyOwnerOverrides(t *testing.T) {
 			t.Errorf("Root should be untouched: got %q", got.Root)
 		}
 	})
+}
+
+// A "repos" entry decodes from either form, so a config file written
+// before per-repo overrides existed stays valid.
+func TestLoadFileConfigAcceptsBothRepoEntryForms(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"repos": [
+			"someone/useful-lib",
+			{"name": "cli/cli", "vcs": "jj"},
+			{"name": "other/plain"}
+		]
+	}`)
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("LoadFileConfig: %v", err)
+	}
+	if len(fc.Repos) != 3 {
+		t.Fatalf("Repos = %+v", fc.Repos)
+	}
+	if fc.Repos[0].Name != "someone/useful-lib" || fc.Repos[0].VCS != nil {
+		t.Errorf("bare string form: %+v", fc.Repos[0])
+	}
+	if fc.Repos[1].Name != "cli/cli" || fc.Repos[1].VCS == nil || *fc.Repos[1].VCS != "jj" {
+		t.Errorf("object form with vcs: %+v", fc.Repos[1])
+	}
+	if fc.Repos[2].Name != "other/plain" || fc.Repos[2].VCS != nil {
+		t.Errorf("object form without vcs: %+v", fc.Repos[2])
+	}
+}
+
+func TestLoadFileConfigRejectsBadRepoEntries(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		// DisallowUnknownFields does not reach into a custom
+		// UnmarshalJSON, so RepoConfig has to set it itself.
+		{"unknown key in a repo entry", `{"repos": [{"name": "o/r", "protocol": "ssh"}]}`},
+		{"invalid vcs on a repo", `{"repos": [{"name": "o/r", "vcs": "hg"}]}`},
+		{"invalid vcs on an owner", `{"owners": [{"name": "o", "vcs": "hg"}]}`},
+		{"invalid global vcs is not caught here", `{"repos": [42]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := LoadFileConfig(writeConfigFile(t, tt.body)); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestApplyRepoOverrides(t *testing.T) {
+	jj, git := "jj", "git"
+	fc := &FileConfig{
+		Owners: []OwnerConfig{{Name: "jj-org", VCS: &jj}},
+		Repos: []RepoConfig{
+			{Name: "jj-org/git-repo", VCS: &git},
+			{Name: "git-org/jj-repo", VCS: &jj},
+			{Name: "git-org/plain"},
+		},
+	}
+	base := Default() // VCS: "git"
+
+	tests := []struct {
+		name        string
+		owner, repo string
+		want        string
+	}{
+		{"nothing configured", "other", "repo", "git"},
+		{"owner override", "jj-org", "anything", "jj"},
+		// The repo entry is applied after the owner's, so it wins.
+		{"repo override beats its owner's", "jj-org", "git-repo", "git"},
+		{"repo override with no owner entry", "git-org", "jj-repo", "jj"},
+		{"repo entry with no override", "git-org", "plain", "git"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ApplyRepoOverrides(base, fc, tt.owner, tt.repo).VCS; got != tt.want {
+				t.Errorf("VCS = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	if got := ApplyRepoOverrides(base, nil, "o", "r").VCS; got != "git" {
+		t.Errorf("nil config: VCS = %q, want %q", got, "git")
+	}
+}
+
+func TestValidateRejectsAnUnknownVCS(t *testing.T) {
+	s := Default()
+	s.VCS = "hg"
+	if err := Validate(s); err == nil {
+		t.Fatal("expected an error for an unknown vcs")
+	}
 }

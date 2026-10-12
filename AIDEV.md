@@ -1951,21 +1951,36 @@ Each step is its own jj change (`jj new -m ...`) before any edits.
         refused without `--force` for both kinds, and the jj removal
         refuses a path that is not one of this clone's own workspaces
         (it is the one that does the `os.RemoveAll` itself).
-- [ ] jj: `jj new -m "feat(config): vcs setting, per owner and per repo"`.
-  - [ ] `settings`: `Settings.VCS` + `Default` + `Validate`, the
+- [x] jj: `jj new -m "feat(config): vcs setting, per owner and per repo"`.
+  - [x] `settings`: `Settings.VCS` + `Default` + `Validate`, the
         `settingsTable` entry (`--vcs`, `GH_WORKSPACE_VCS`, `vcs`, for
         `CmdSync`/`CmdClone`/`CmdWorktreeAdd`), `OwnerConfig.VCS` +
         `ApplyOwnerOverrides`, `RepoConfig` + `UnmarshalJSON`,
         `ApplyRepoOverrides`, and `validateOwnersAndRepos` over the new
-        `Repos` type.
-  - [ ] Update the `fc.Repos` readers: `cli/sync.go`'s `addExplicit`
+        `Repos` type. `RepoConfig.UnmarshalJSON` sets
+        `DisallowUnknownFields` on its own decoder: the option
+        `LoadFileConfig` sets does **not** reach into a custom
+        `UnmarshalJSON`, so without it an unknown key inside a `repos`
+        object would have been silently ignored, breaking this tool's
+        "an unknown key is a hard error" rule in exactly one spot.
+  - [x] Update the `fc.Repos` readers: `cli/sync.go`'s `addExplicit`
         loop, `cli/clone.go`'s `configTracks`, and
         `TestSettingsTableConfigKeysMatchFileConfig`.
-  - [ ] `cli/main.go`'s `usageFlags` gains `--vcs` so `--help` can't
-        drift.
-  - [ ] Tests: union decoding (bare string, object, object without
-        `vcs`, invalid `vcs`), owner and repo override precedence,
-        flag/env/file precedence.
+  - [x] `cli/main.go`'s `usageFlags` gains `--vcs` so `--help` can't
+        drift, and `pin_test.go`'s two pinned `--help` goldens were
+        updated for the new flag (top-level, and `worktree add`, where it
+        sorts after `--timeout`). `worktree remove`/`list` help is
+        unchanged, which is the point: they don't accept it.
+  - [x] Tests: both `repos` entry forms decode, and the rejections
+        (unknown key inside an entry, bad `vcs` on a repo, on an owner,
+        and a non-string non-object entry); `ApplyRepoOverrides`
+        precedence including a repo override beating its own owner's;
+        `Validate` rejecting an unknown `vcs`. `TestSettingsFor` gained a
+        `clonesRepos` category for `vcs` — sync/clone/worktree-add but
+        **not** worktree remove/list, which detect instead of being told —
+        since it fits neither the existing `shared` nor `syncAndClone`
+        group, and that test counts entries so a miscategorized setting
+        fails it.
 - [ ] jj: `jj new -m "feat(engine): clone, fetch and archive through the
       vcs seam"`.
   - [ ] `engine.Task` gains `VCS` (the configured kind for this repo) and

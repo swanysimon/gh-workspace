@@ -8,6 +8,7 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,11 +24,23 @@ import (
 
 // Settings holds every value this package resolves.
 type Settings struct {
-	Root         string
-	Concurrency  int
-	Timeout      time.Duration // per subprocess
-	MaxRepos     int           // gh --limit
-	Protocol     string        // "ssh" | "https"
+	Root        string
+	Concurrency int
+	Timeout     time.Duration // per subprocess
+	MaxRepos    int           // gh --limit
+	Protocol    string        // "ssh" | "https"
+	// VCS is which version control system manages a clone: "git" (the
+	// default) or "jj". It is a plain validated string rather than a
+	// dedicated type, exactly like Protocol above, so this package keeps
+	// no dependency on internal/vcs; callers convert at the boundary.
+	//
+	// It only ever decides what to do with a repo whose clone does not
+	// exist yet, or whether to convert an existing git clone — a clone
+	// already managed by jj is recognized from its own .jj directory, so
+	// changing this setting can never invalidate what is on disk. Unlike
+	// every other setting it is overridable per repo as well as per
+	// owner; see ApplyRepoOverrides.
+	VCS          string
 	IncludeForks bool
 	Archive      bool
 	Force        bool
@@ -59,6 +72,7 @@ func Default() Settings {
 		Timeout:      30 * time.Minute,
 		MaxRepos:     10000,
 		Protocol:     "ssh",
+		VCS:          "git",
 		IncludeForks: false,
 		Archive:      true,
 		WorktreePath: "{repo}",
@@ -91,6 +105,9 @@ func Validate(s Settings) error {
 	if s.Protocol != "ssh" && s.Protocol != "https" {
 		return fmt.Errorf("protocol must be ssh or https, got %q", s.Protocol)
 	}
+	if err := validateVCS(s.VCS); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(s.Root) {
 		return fmt.Errorf("root must be an absolute path, got %q", s.Root)
 	}
@@ -119,10 +136,11 @@ type FileConfig struct {
 	Timeout      *string       `json:"timeout"` // parsed with time.ParseDuration
 	MaxRepos     *int          `json:"maxRepos"`
 	Protocol     *string       `json:"protocol"`
+	VCS          *string       `json:"vcs"`
 	IncludeForks *bool         `json:"includeForks"`
 	Archive      *bool         `json:"archive"`
 	Owners       []OwnerConfig `json:"owners"`
-	Repos        []string      `json:"repos"`
+	Repos        []RepoConfig  `json:"repos"`
 	WorktreeRoot *string       `json:"worktreeRoot"`
 	WorktreePath *string       `json:"worktreePath"`
 }
@@ -132,10 +150,51 @@ type FileConfig struct {
 // setting. A nil field means "use the global default," exactly like
 // FileConfig's own nil-means-unset fields.
 type OwnerConfig struct {
-	Name         string `json:"name"`
-	IncludeForks *bool  `json:"includeForks"`
-	Archive      *bool  `json:"archive"`
-	MaxRepos     *int   `json:"maxRepos"`
+	Name         string  `json:"name"`
+	IncludeForks *bool   `json:"includeForks"`
+	Archive      *bool   `json:"archive"`
+	MaxRepos     *int    `json:"maxRepos"`
+	VCS          *string `json:"vcs"`
+}
+
+// RepoConfig is one entry in the config file's "repos" list. It decodes
+// from either a bare "<owner>/<repo>" string or an object with that name
+// plus overrides, so every config file written before per-repo overrides
+// existed stays valid:
+//
+//	"repos": ["someone/useful-lib", { "name": "cli/cli", "vcs": "jj" }]
+//
+// VCS is the only override here, rather than the three OwnerConfig
+// carries: includeForks and maxRepos are about *listing* an owner, which
+// has no meaning for a single named repo, and nothing has asked for a
+// per-repo archive override.
+type RepoConfig struct {
+	Name string  `json:"name"`
+	VCS  *string `json:"vcs"`
+}
+
+// UnmarshalJSON accepts the bare-string form as well as the object form.
+// It decodes the object with DisallowUnknownFields of its own: the
+// decoder LoadFileConfig sets that on does not carry the option into a
+// custom UnmarshalJSON, and an unknown key must stay a hard error here
+// too -- never guess at config intent.
+func (rc *RepoConfig) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		*rc = RepoConfig{Name: name}
+		return nil
+	}
+
+	// A local type without this method, so decoding it can't recurse.
+	type repoConfig RepoConfig
+	var out repoConfig
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return fmt.Errorf(`repos: an entry must be "<owner>/<repo>" or {"name": "<owner>/<repo>", ...}: %w`, err)
+	}
+	*rc = RepoConfig(out)
+	return nil
 }
 
 // ownerNamePattern matches a GitHub org or user login -- the same shape
@@ -180,7 +239,51 @@ func ApplyOwnerOverrides(base Settings, oc OwnerConfig) Settings {
 	if oc.MaxRepos != nil {
 		out.MaxRepos = *oc.MaxRepos
 	}
+	if oc.VCS != nil {
+		out.VCS = *oc.VCS
+	}
 	return out
+}
+
+// ApplyRepoOverrides returns base with owner-level and then repo-level
+// overrides applied, for a command acting on one named repo. It exists
+// because ApplyOwnerOverrides above is only reachable from a
+// workspace-wide sync, which walks the owners list itself: every
+// single-repo entry point (clone, worktree add, sync <owner>/<repo>) had
+// no way to see per-owner config at all, so without this a configured
+// "vcs" would silently not apply to exactly the commands most likely to
+// be run against one repo.
+//
+// A malformed or unknown owner/repo simply matches nothing, which is the
+// right answer for a lookup: LoadFileConfig has already rejected a config
+// file whose entries aren't well formed.
+func ApplyRepoOverrides(base Settings, fc *FileConfig, owner, repo string) Settings {
+	if fc == nil {
+		return base
+	}
+	out := base
+	for _, oc := range fc.Owners {
+		if oc.Name == owner {
+			out = ApplyOwnerOverrides(out, oc)
+			break
+		}
+	}
+	for _, rc := range fc.Repos {
+		if rc.Name == owner+"/"+repo {
+			if rc.VCS != nil {
+				out.VCS = *rc.VCS
+			}
+			break
+		}
+	}
+	return out
+}
+
+func validateVCS(v string) error {
+	if v != "git" && v != "jj" {
+		return fmt.Errorf("vcs must be git or jj, got %q", v)
+	}
+	return nil
 }
 
 func ResolveConfigPath(flagValue string) string {
@@ -240,25 +343,35 @@ func validateOwnersAndRepos(fc FileConfig) error {
 		if seenOwners[o.Name] {
 			return fmt.Errorf("owners: %q is listed more than once", o.Name)
 		}
+		if o.VCS != nil {
+			if err := validateVCS(*o.VCS); err != nil {
+				return fmt.Errorf("owners: %q: %w", o.Name, err)
+			}
+		}
 		seenOwners[o.Name] = true
 	}
 
 	seenRepos := map[string]bool{}
-	for _, r := range fc.Repos {
-		owner, repo, ok := strings.Cut(r, "/")
+	for _, rc := range fc.Repos {
+		owner, repo, ok := strings.Cut(rc.Name, "/")
 		if !ok || owner == "" || repo == "" {
-			return fmt.Errorf("repos: %q is not a valid \"<owner>/<repo>\" entry", r)
+			return fmt.Errorf("repos: %q is not a valid \"<owner>/<repo>\" entry", rc.Name)
 		}
 		if !ValidOwnerName(owner) {
-			return fmt.Errorf("repos: %q: %q is not a valid GitHub org or user name", r, owner)
+			return fmt.Errorf("repos: %q: %q is not a valid GitHub org or user name", rc.Name, owner)
 		}
 		if !store.ValidRepoName(repo) {
-			return fmt.Errorf("repos: %q: %q is not a valid repo name", r, repo)
+			return fmt.Errorf("repos: %q: %q is not a valid repo name", rc.Name, repo)
 		}
-		if seenRepos[r] {
-			return fmt.Errorf("repos: %q is listed more than once", r)
+		if rc.VCS != nil {
+			if err := validateVCS(*rc.VCS); err != nil {
+				return fmt.Errorf("repos: %q: %w", rc.Name, err)
+			}
 		}
-		seenRepos[r] = true
+		if seenRepos[rc.Name] {
+			return fmt.Errorf("repos: %q is listed more than once", rc.Name)
+		}
+		seenRepos[rc.Name] = true
 	}
 	return nil
 }
@@ -445,6 +558,18 @@ var settingsTable = []Setting{
 		},
 		parseEnv: func(v string) (any, error) { return v, nil },
 		apply:    func(s *Settings, v any) { s.Protocol = v.(string) },
+	},
+	{
+		flagName: "vcs", kind: kindString, usage: "version control system for new clones: git or jj",
+		envVar: "GH_WORKSPACE_VCS", configKey: "vcs", commands: inCmd(CmdSync, CmdClone, CmdWorktreeAdd),
+		fileValue: func(fc *FileConfig) (any, bool, error) {
+			if fc.VCS == nil {
+				return nil, false, nil
+			}
+			return *fc.VCS, true, nil
+		},
+		parseEnv: func(v string) (any, error) { return v, nil },
+		apply:    func(s *Settings, v any) { s.VCS = v.(string) },
 	},
 	{
 		flagName: "include-forks", kind: kindBool, usage: "include forked repos",

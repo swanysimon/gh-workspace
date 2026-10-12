@@ -61,6 +61,7 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"      --timeout duration   per-subprocess timeout (default 30m0s)\n" +
 		"      --max-repos int      maximum repos to list from the org (gh --limit) (default 10000)\n" +
 		"      --protocol string    clone protocol: ssh or https (default \"ssh\")\n" +
+		"      --vcs string         version control system for new clones: git or jj (default \"git\")\n" +
 		"      --include-forks      include forked repos\n" +
 		"      --archive            tarball archived repos and remove their clones\n" +
 		"      --force              ignore stored pushedAt and re-sync every repo\n" +
@@ -90,6 +91,7 @@ func TestPinWorktreeSubcommandHelp(t *testing.T) {
 				"      --protocol string        clone protocol: ssh or https (default \"ssh\")\n" +
 				"      --root string            root directory for cloned orgs (default \"" + root + "\")\n" +
 				"      --timeout duration       per-subprocess timeout (default 30m0s)\n" +
+				"      --vcs string             version control system for new clones: git or jj (default \"git\")\n" +
 				"      --worktree-path string   worktree path template under worktree-root ({owner}, {repo}, {branch})\n" +
 				"      --worktree-root string   root directory new worktrees are placed under (default: the current directory)\n",
 		},

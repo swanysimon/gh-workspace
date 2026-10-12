@@ -237,8 +237,8 @@ func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictO
 		explicitByOwner[owner][repo] = true
 	}
 	if fc != nil {
-		for _, r := range fc.Repos {
-			if owner, repo, ok := strings.Cut(r, "/"); ok {
+		for _, rc := range fc.Repos {
+			if owner, repo, ok := strings.Cut(rc.Name, "/"); ok {
 				addExplicit(owner, repo)
 			}
 		}

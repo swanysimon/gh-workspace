@@ -308,6 +308,7 @@ func usageFlags(d config) []flagHelp {
 		{long: "timeout", valueHint: "duration", usage: "per-subprocess timeout", def: d.Timeout.String()},
 		{long: "max-repos", valueHint: "int", usage: "maximum repos to list from the org (gh --limit)", def: strconv.Itoa(d.MaxRepos)},
 		{long: "protocol", valueHint: "string", usage: "clone protocol: ssh or https", def: d.Protocol, quoteDef: true},
+		{long: "vcs", valueHint: "string", usage: "version control system for new clones: git or jj", def: d.VCS, quoteDef: true},
 		{long: "include-forks", usage: "include forked repos"},
 		{long: "archive", usage: "tarball archived repos and remove their clones"},
 		{long: "force", usage: "ignore stored pushedAt and re-sync every repo"},
