@@ -21,10 +21,10 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/archive"
 	"github.com/swanysimon/gh-workspace/internal/execx"
 	"github.com/swanysimon/gh-workspace/internal/ghcli"
-	"github.com/swanysimon/gh-workspace/internal/gitcli"
 	"github.com/swanysimon/gh-workspace/internal/plan"
 	"github.com/swanysimon/gh-workspace/internal/settings"
 	"github.com/swanysimon/gh-workspace/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
 // Env is everything engine needs that isn't specific to one call: the
@@ -61,7 +61,12 @@ func SweepTempClones(env Env) {
 // mistaken for a complete one. This is the single-repo clone path shared by
 // a full sync (via BuildTasks/RunTasks), worktree add (via EnsureCloned),
 // and archiving a repo that isn't locally cloned yet.
-func CloneInto(ctx context.Context, env Env, repo ghcli.Repo) error {
+//
+// kind is passed rather than detected: there is no clone on disk yet to
+// detect anything from, so the configured setting is the only input. Every
+// task-driven caller passes the kind BuildTasks already resolved onto the
+// task (Task.VCS), which is where a per-repo override is accounted for.
+func CloneInto(ctx context.Context, env Env, repo ghcli.Repo, kind vcs.Kind) error {
 	url := ghcli.CloneURL(repo, env.Settings.Protocol)
 	if url == "" {
 		return fmt.Errorf("repo %q has no clone URL for protocol %q", repo.Name, env.Settings.Protocol)
@@ -70,7 +75,7 @@ func CloneInto(ctx context.Context, env Env, repo ghcli.Repo) error {
 	dest := filepath.Join(env.ReposDir(), repo.Name)
 	tmp := filepath.Join(env.ReposDir(), ".tmp-"+repo.Name+"-"+strconv.Itoa(os.Getpid()))
 
-	return gitcli.Clone(ctx, env.Exec, env.Settings.Timeout, url, dest, tmp)
+	return vcs.Clone(ctx, env.Exec, env.Settings.Timeout, kind, url, dest, tmp)
 }
 
 // EnsureCloned clones repo if needed and writes the same state.json entry a
@@ -83,7 +88,7 @@ func CloneInto(ctx context.Context, env Env, repo ghcli.Repo) error {
 // is marked Tracked: true -- this is, by definition, an explicit add. The
 // caller must hold the owner's lock.
 func EnsureCloned(ctx context.Context, env Env, repo ghcli.Repo, stderr io.Writer) error {
-	if err := CloneInto(ctx, env, repo); err != nil {
+	if err := CloneInto(ctx, env, repo, vcs.Kind(env.Settings.VCS)); err != nil {
 		return err
 	}
 
@@ -139,7 +144,8 @@ func SyncOne(ctx context.Context, env Env, repo ghcli.Repo, explicit bool, stder
 		plan.Options{Force: env.Settings.Force, Archive: env.Settings.Archive},
 	)
 
-	res := processTask(ctx, env, Task{Repo: repo, Action: act, Reason: reason, Prev: prev}, nil)
+	kind, adopt := resolveVCS(dir, env.Settings.VCS, act)
+	res := processTask(ctx, env, Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt}, nil)
 	if res.Err != nil {
 		return res, res.Err
 	}
@@ -164,11 +170,37 @@ func SyncOne(ctx context.Context, env Env, repo ghcli.Repo, explicit bool, stder
 }
 
 // Task is one repo's planned action, decided by BuildTasks.
+//
+// VCS is the kind resolved for this repo (see vcs.Resolve) rather than the
+// kind configured for its owner, so a per-repo override reaches the worker
+// that acts on it. The zero value, "", means git: a Task built without it
+// behaves exactly as every Task did before jj existed here.
+//
+// Adopt means "convert this existing git clone to a colocated jj repo
+// first." It is decided here, at planning time, rather than inside the
+// worker, so a dry run reports it instead of it surprising the user on the
+// next real run.
 type Task struct {
 	Repo   ghcli.Repo
 	Action plan.Action
 	Reason string
 	Prev   store.RepoState
+	VCS    string
+	Adopt  bool
+}
+
+// resolveVCS decides a task's kind and whether its clone has to be adopted
+// first. Adoption is only ever worth planning for an action that leaves a
+// live clone in place: archiving a repo should not convert it on the way
+// out, and a clone that is about to be created is created as jj to begin
+// with. Folding that into the flag here keeps processTask free of the
+// question entirely, and makes Adopt mean exactly "this run will adopt".
+func resolveVCS(dir, configured string, act plan.Action) (kind string, adopt bool) {
+	resolved, shouldAdopt := vcs.Resolve(dir, vcs.Kind(configured))
+	if act != plan.Skip && act != plan.Fetch {
+		shouldAdopt = false
+	}
+	return string(resolved), shouldAdopt
 }
 
 // decidePrevState maps a store.RepoState's Status into plan.PrevState's two
@@ -276,7 +308,11 @@ func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State
 		if renamedFrom != "" {
 			reason = fmt.Sprintf("rename from %q, then: %s", renamedFrom, reason)
 		}
-		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev})
+		kind, adopt := resolveVCS(dir, env.Settings.VCS, act)
+		if adopt {
+			reason = "adopt the existing git clone into jj, then: " + reason
+		}
+		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt})
 	}
 	return tasks, seen, failed
 }
@@ -297,7 +333,20 @@ func BuildTasks(ctx context.Context, env Env, repos []ghcli.Repo, st store.State
 // decided normally -- data is never moved between owner directories
 // automatically -- but the reason string notes the transfer so a human
 // sees it.
-func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State) []Task {
+// configuredVCS names this owner's per-repo "vcs" setting by repo name.
+// BuildTasks can read env.Settings.VCS directly because an owner listing
+// is, by definition, every repo under one owner's configuration; the repos
+// reaching BuildExplicitTasks are the individually configured ones, which
+// are exactly the ones allowed their own override. A nil func means "use
+// env.Settings.VCS for all of them".
+func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State, configuredVCS func(repoName string) string) []Task {
+	configured := func(name string) string {
+		if configuredVCS == nil {
+			return env.Settings.VCS
+		}
+		return configuredVCS(name)
+	}
+
 	tasks := make([]Task, 0, len(results))
 	for _, r := range results {
 		prev, known := st.Repos[r.Name]
@@ -329,13 +378,23 @@ func BuildExplicitTasks(env Env, results []ghcli.RepoResult, st store.State) []T
 		if owner, _, ok := strings.Cut(repo.NameWithOwner, "/"); ok && owner != "" && owner != r.Owner {
 			reason = fmt.Sprintf("owner on GitHub is now %q (transferred); local data stays under %q: %s", owner, r.Owner, reason)
 		}
-		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev})
+		kind, adopt := resolveVCS(dir, configured(r.Name), act)
+		if adopt {
+			reason = "adopt the existing git clone into jj, then: " + reason
+		}
+		tasks = append(tasks, Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt})
 	}
 	return tasks
 }
 
 // fixupRename moves a renamed repo's directory and state entry without an
 // orphaned directory plus a full re-clone.
+//
+// AIDEV: moving the directory breaks any working copy linked to it -- a git
+// worktree's .git file and a jj workspace's .jj/repo both name the old
+// path, and jj's is relative, so it breaks even if the whole root moves
+// together; upgrade path is re-pointing each linked working copy after the
+// move.
 func fixupRename(ctx context.Context, env Env, st store.State, oldName string, repo ghcli.Repo, stderr io.Writer) {
 	if !renameApplies(env, oldName, repo.Name) {
 		return
@@ -349,7 +408,7 @@ func fixupRename(ctx context.Context, env Env, st store.State, oldName string, r
 	st.Repos[repo.Name] = st.Repos[oldName]
 	delete(st.Repos, oldName)
 	if url := ghcli.CloneURL(repo, env.Settings.Protocol); url != "" {
-		if err := gitcli.SetRemoteURL(ctx, env.Exec, env.Settings.Timeout, newDir, url); err != nil {
+		if err := vcs.SetRemoteURL(ctx, env.Exec, env.Settings.Timeout, newDir, url); err != nil {
 			fmt.Fprintf(stderr, "warning: could not update remote url for renamed repo %q: %v\n", repo.Name, err)
 		}
 	}
@@ -629,12 +688,51 @@ func RunTasks(ctx context.Context, env Env, tasks []Task, stderr io.Writer) []Re
 	return results
 }
 
+// defaultBranchOf is the repo's default branch name, or "" when GitHub
+// reported none (an empty repo). Three call sites in processTask repeated
+// the same nil check before adoption added a fourth.
+func defaultBranchOf(repo ghcli.Repo) string {
+	if repo.DefaultBranch == nil {
+		return ""
+	}
+	return repo.DefaultBranch.Name
+}
+
 func processTask(ctx context.Context, env Env, t Task, progress *progressReporter) Result {
 	repo := t.Repo
 	res := Result{Name: repo.Name, Action: t.Action}
 
 	if t.Action != plan.Skip {
 		progress.starting(repo.Name, t.Action)
+	}
+
+	// Adoption runs before the action, including before a Skip: a repo
+	// unchanged upstream otherwise does no work at all, and waiting for
+	// one to change upstream before a configured "vcs": "jj" took effect
+	// would make the setting look broken. It is one local command and no
+	// network, so the cost of the exception is small. A dirty clone is
+	// never adopted -- "jj git init" snapshots uncommitted work into @ and
+	// stages it in git's index -- and warns every run, exactly like the
+	// dirty-tree handling below.
+	if t.Adopt {
+		dir := filepath.Join(env.ReposDir(), repo.Name)
+		dirty, err := vcs.IsDirty(ctx, env.Exec, env.Settings.Timeout, dir)
+		if err != nil {
+			res.Err = err
+			return res
+		}
+		if dirty {
+			res.Notes = append(res.Notes, "working tree has uncommitted changes, not adopting it into jj")
+		} else {
+			warn, err := vcs.Adopt(ctx, env.Exec, env.Settings.Timeout, dir, defaultBranchOf(repo))
+			if err != nil {
+				res.Err = err
+				return res
+			}
+			if warn != "" {
+				res.Notes = append(res.Notes, warn)
+			}
+		}
 	}
 
 	switch t.Action {
@@ -647,20 +745,16 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 	case plan.Clone, plan.Fetch:
 		dir := filepath.Join(env.ReposDir(), repo.Name)
 		if t.Action == plan.Clone {
-			if err := CloneInto(ctx, env, repo); err != nil {
+			if err := CloneInto(ctx, env, repo, vcs.Kind(t.VCS)); err != nil {
 				res.Err = err
 				return res
 			}
-		} else if err := gitcli.Fetch(ctx, env.Exec, env.Settings.Timeout, dir); err != nil {
+		} else if err := vcs.Fetch(ctx, env.Exec, env.Settings.Timeout, dir); err != nil {
 			res.Err = err
 			return res
 		}
 
-		defaultBranch := ""
-		if repo.DefaultBranch != nil {
-			defaultBranch = repo.DefaultBranch.Name
-		}
-		warn, dirty, err := gitcli.UpdateWorktree(ctx, env.Exec, env.Settings.Timeout, dir, defaultBranch)
+		warn, dirty, err := vcs.UpdateWorkingCopy(ctx, env.Exec, env.Settings.Timeout, dir, defaultBranchOf(repo))
 		if err != nil {
 			res.Err = err
 			return res
@@ -679,10 +773,6 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 
 	case plan.Archive, plan.AdoptArchived:
 		dir := filepath.Join(env.ReposDir(), repo.Name)
-		defaultBranch := ""
-		if repo.DefaultBranch != nil {
-			defaultBranch = repo.DefaultBranch.Name
-		}
 		archiveRepoInfo := archive.Repo{
 			ID:            repo.ID,
 			Owner:         env.Owner,
@@ -691,9 +781,9 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 			URL:           repo.URL,
 			PushedAt:      repo.PushedAt,
 			ArchivedAt:    repo.ArchivedAt,
-			DefaultBranch: defaultBranch,
+			DefaultBranch: defaultBranchOf(repo),
 		}
-		clone := func(ctx context.Context) error { return CloneInto(ctx, env, repo) }
+		clone := func(ctx context.Context) error { return CloneInto(ctx, env, repo, vcs.Kind(t.VCS)) }
 		rs, notes, err := archive.Archive(ctx, env.Exec, env.Settings.Timeout, env.Confirm, archiveRepoInfo, dir, env.ArchivesDir(), clone)
 		res.Notes = notes
 		if err != nil {
@@ -706,7 +796,7 @@ func processTask(ctx context.Context, env Env, t Task, progress *progressReporte
 		return res
 
 	case plan.Unarchive:
-		if err := CloneInto(ctx, env, repo); err != nil {
+		if err := CloneInto(ctx, env, repo, vcs.Kind(t.VCS)); err != nil {
 			res.Err = err
 			return res
 		}

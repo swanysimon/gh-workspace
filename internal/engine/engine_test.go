@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -394,7 +395,7 @@ func TestBuildExplicitTasksMissingUpstream(t *testing.T) {
 
 	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
 		{Owner: env.Owner, Name: "gone", Repo: nil},
-	}, st)
+	}, st, nil)
 
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -417,7 +418,7 @@ func TestBuildExplicitTasksDecidesLikeAFullSync(t *testing.T) {
 
 	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
 		{Owner: env.Owner, Name: "repo1", Repo: &repo},
-	}, store.State{})
+	}, store.State{}, nil)
 
 	if len(tasks) != 1 || tasks[0].Action != plan.Clone {
 		t.Fatalf("got %+v, want a single Clone task (nothing local yet)", tasks)
@@ -435,7 +436,7 @@ func TestBuildExplicitTasksNotesTransfer(t *testing.T) {
 
 	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
 		{Owner: env.Owner, Name: "repo1", Repo: &repo},
-	}, store.State{})
+	}, store.State{}, nil)
 
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -569,5 +570,198 @@ func TestApplyResultsToStateSkipsFailedAndCarriesTrackedForward(t *testing.T) {
 	}
 	if !st.Repos["failed"].PushedAt.Equal(staleFailedPushedAt) {
 		t.Fatalf("failed: entry should be untouched, got %+v", st.Repos["failed"])
+	}
+}
+
+// requireJJ skips a test that drives the real jj binary when jj is not
+// installed, and pins jj's configuration away from the developer's own.
+// Duplicated from the same-shaped helpers in internal/jjcli and
+// internal/vcs rather than shared across package boundaries, matching how
+// initTestRepo above is handled.
+func requireJJ(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not installed")
+	}
+	cfg := filepath.Join(t.TempDir(), "jj.toml")
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("JJ_USER", "Test")
+	t.Setenv("JJ_EMAIL", "test@example.com")
+}
+
+// TestResolveVCS covers the one piece of policy engine adds on top of
+// vcs.Resolve: adoption is only planned for an action that leaves a live
+// clone behind. Archiving a repo must not convert it on the way out.
+func TestResolveVCS(t *testing.T) {
+	root := t.TempDir()
+	gitClone := filepath.Join(root, "git")
+	if err := os.MkdirAll(filepath.Join(gitClone, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "missing")
+
+	tests := []struct {
+		name       string
+		dir        string
+		configured string
+		act        plan.Action
+		wantKind   string
+		wantAdopt  bool
+	}{
+		{"skip adopts", gitClone, "jj", plan.Skip, "jj", true},
+		{"fetch adopts", gitClone, "jj", plan.Fetch, "jj", true},
+		{"archive does not adopt", gitClone, "jj", plan.Archive, "jj", false},
+		{"adopting an existing archive does not adopt", gitClone, "jj", plan.AdoptArchived, "jj", false},
+		{"unarchive does not adopt", gitClone, "jj", plan.Unarchive, "jj", false},
+		{"configured git never adopts", gitClone, "git", plan.Fetch, "git", false},
+		{"unset means git", gitClone, "", plan.Fetch, "git", false},
+		{"nothing on disk is cloned as jj", missing, "jj", plan.Clone, "jj", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, adopt := resolveVCS(tt.dir, tt.configured, tt.act)
+			if kind != tt.wantKind || adopt != tt.wantAdopt {
+				t.Errorf("resolveVCS = (%q, %v), want (%q, %v)", kind, adopt, tt.wantKind, tt.wantAdopt)
+			}
+		})
+	}
+}
+
+func TestSyncOneClonesWithJJWhenConfigured(t *testing.T) {
+	requireJJ(t)
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	env.Settings.VCS = "jj"
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("SyncOne: %v", err)
+	}
+	if res.Action != plan.Clone {
+		t.Fatalf("Action = %q, want %q", res.Action, plan.Clone)
+	}
+	dir := filepath.Join(env.ReposDir(), "repo1")
+	for _, name := range []string{".jj", ".git"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("clone is missing %s: %v", name, err)
+		}
+	}
+}
+
+// A repo unchanged upstream is skipped, which normally means zero work --
+// but a configured "vcs": "jj" has to take effect anyway, or the setting
+// would appear to do nothing until the repo next changed upstream.
+func TestSyncOneAdoptsAnExistingGitCloneOnSkip(t *testing.T) {
+	requireJJ(t)
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	pushedAt := time.Now()
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: pushedAt, DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("SyncOne (git): %v", err)
+	}
+	dir := filepath.Join(env.ReposDir(), "repo1")
+	if _, err := os.Stat(filepath.Join(dir, ".jj")); !os.IsNotExist(err) {
+		t.Fatalf("precondition: clone should not be jj yet, stat err = %v", err)
+	}
+
+	env.Settings.VCS = "jj"
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("SyncOne (jj): %v", err)
+	}
+	if res.Action != plan.Skip {
+		t.Fatalf("Action = %q, want %q: adoption must not change the planned action", res.Action, plan.Skip)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".jj")); err != nil {
+		t.Errorf("clone was not adopted into jj: %v", err)
+	}
+}
+
+// "A dirty working tree is never touched" covers adoption too: jj git init
+// would snapshot the uncommitted work into @ and stage it in git's index.
+func TestSyncOneDoesNotAdoptADirtyClone(t *testing.T) {
+	requireJJ(t)
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	pushedAt := time.Now()
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: pushedAt, DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	if _, err := SyncOne(context.Background(), env, repo, true, os.Stderr); err != nil {
+		t.Fatalf("SyncOne (git): %v", err)
+	}
+	dir := filepath.Join(env.ReposDir(), "repo1")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("local work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env.Settings.VCS = "jj"
+	res, err := SyncOne(context.Background(), env, repo, true, os.Stderr)
+	if err != nil {
+		t.Fatalf("SyncOne (jj): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".jj")); !os.IsNotExist(err) {
+		t.Errorf("a dirty clone must not be adopted, stat err = %v", err)
+	}
+	if !strings.Contains(strings.Join(res.Notes, " "), "not adopting") {
+		t.Errorf("expected a note explaining the skip, got %q", res.Notes)
+	}
+}
+
+// A dry run must report a planned adoption rather than letting it happen
+// unannounced on the next real run.
+func TestBuildTasksReportsAPlannedAdoptionInTheReason(t *testing.T) {
+	env := testEnv(t)
+	env.Settings.VCS = "jj"
+	env.Settings.DryRun = true
+
+	dir := filepath.Join(env.ReposDir(), "repo1")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pushedAt := time.Now()
+	st := store.State{Repos: map[string]store.RepoState{
+		"repo1": {ID: "R1", PushedAt: pushedAt, Status: store.StatusCloned},
+	}}
+	repo := ghcli.Repo{ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1", PushedAt: pushedAt}
+
+	tasks, _, failed := BuildTasks(context.Background(), env, []ghcli.Repo{repo}, st, os.Stderr)
+	if failed != 0 || len(tasks) != 1 {
+		t.Fatalf("got %d tasks, %d failed", len(tasks), failed)
+	}
+	if !tasks[0].Adopt {
+		t.Error("Adopt = false, want true")
+	}
+	if !strings.Contains(tasks[0].Reason, "adopt the existing git clone into jj") {
+		t.Errorf("reason does not mention adoption: %q", tasks[0].Reason)
+	}
+}
+
+// A per-repo "vcs" override has to reach the task, since a workspace-wide
+// sync is the main way an individually configured repo gets synced.
+func TestBuildExplicitTasksUsesThePerRepoVCS(t *testing.T) {
+	env := testEnv(t) // VCS unset, i.e. git
+	repo := ghcli.Repo{ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1", PushedAt: time.Now()}
+
+	tasks := BuildExplicitTasks(env, []ghcli.RepoResult{
+		{Owner: env.Owner, Name: "repo1", Repo: &repo},
+	}, store.State{}, func(string) string { return "jj" })
+
+	if len(tasks) != 1 || tasks[0].VCS != "jj" {
+		t.Fatalf("got %+v, want one task with VCS \"jj\"", tasks)
 	}
 }

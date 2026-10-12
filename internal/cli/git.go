@@ -6,6 +6,7 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/engine"
 	"github.com/swanysimon/gh-workspace/internal/execx"
 	"github.com/swanysimon/gh-workspace/internal/gitcli"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
 // execCommand delegates to internal/execx.Run, which is now the one real
@@ -35,7 +36,7 @@ func runGit(ctx context.Context, cfg config, dir string, args ...string) ([]byte
 // engine.Env and call engine.CloneInto directly wasn't judged worth the
 // churn for a one-line forward with no logic of its own left to protect.
 func cloneRepo(ctx context.Context, cfg config, repo ghRepo) error {
-	return engine.CloneInto(ctx, buildEnv(cfg), repo)
+	return engine.CloneInto(ctx, buildEnv(cfg), repo, vcs.Kind(cfg.VCS))
 }
 
 // fetchRepo mirrors upstream refs exactly: --prune and --prune-tags make

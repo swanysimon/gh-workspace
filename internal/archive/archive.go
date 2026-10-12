@@ -29,6 +29,7 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/execx"
 	"github.com/swanysimon/gh-workspace/internal/gitcli"
 	"github.com/swanysimon/gh-workspace/internal/store"
+	"github.com/swanysimon/gh-workspace/internal/vcs"
 )
 
 const ManifestVersion = 1
@@ -143,21 +144,17 @@ func isInteractive(f *os.File) bool {
 // exactly what "no answer available" resolves to) and, on "no", refuses to
 // proceed rather than orphaning them.
 func ConfirmAndRemoveWorktrees(ctx context.Context, run execx.Exec, timeout time.Duration, confirm ConfirmFunc, repoName, dir string) error {
-	paths, err := gitcli.LinkedWorktrees(ctx, run, timeout, dir)
+	attached, err := vcs.Worktrees(ctx, run, timeout, dir)
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 {
+	if len(attached) == 0 {
 		return nil
 	}
 
-	worktrees := make([]WorktreeStatus, len(paths))
-	for i, p := range paths {
-		dirty, err := gitcli.IsDirty(ctx, run, timeout, p)
-		if err != nil {
-			return fmt.Errorf("checking worktree %q of %q: %w", p, repoName, err)
-		}
-		worktrees[i] = WorktreeStatus{Path: p, Dirty: dirty}
+	worktrees := make([]WorktreeStatus, len(attached))
+	for i, w := range attached {
+		worktrees[i] = WorktreeStatus{Path: w.Path, Dirty: w.Dirty}
 	}
 
 	ok, err := confirm(repoName, worktrees)
@@ -168,8 +165,8 @@ func ConfirmAndRemoveWorktrees(ctx context.Context, run execx.Exec, timeout time
 		return fmt.Errorf("repo %q has %d live worktree(s), refusing to archive; remove them (or rerun with --yes, or interactively and answer yes) to proceed", repoName, len(worktrees))
 	}
 
-	for _, w := range worktrees {
-		if _, err := execx.WithTimeout(ctx, timeout, run, dir, "git", "worktree", "remove", "--force", "--", w.Path); err != nil {
+	for _, w := range attached {
+		if err := vcs.WorktreeRemove(ctx, run, timeout, dir, w.Path, true); err != nil {
 			return fmt.Errorf("removing worktree %q of %q: %w", w.Path, repoName, err)
 		}
 	}

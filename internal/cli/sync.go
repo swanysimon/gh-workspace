@@ -388,7 +388,17 @@ func runWorkspaceSync(ctx context.Context, cfg config, fc *fileConfig, restrictO
 				resultsByPlan[be.planIdx] = append(resultsByPlan[be.planIdx], results[i])
 			}
 			for idx, rs := range resultsByPlan {
-				extra := engine.BuildExplicitTasks(plans[idx].env, rs, plans[idx].state)
+				// The repos reaching here are the individually configured
+				// ones, so they're the ones allowed a per-repo "vcs"
+				// override; ApplyRepoOverrides re-applies the owner's own
+				// entry first, which is idempotent over this owner's
+				// already-resolved settings.
+				owner := plans[idx].owner
+				ownerSettings := plans[idx].env.Settings
+				vcsFor := func(name string) string {
+					return settings.ApplyRepoOverrides(ownerSettings, fc, owner, name).VCS
+				}
+				extra := engine.BuildExplicitTasks(plans[idx].env, rs, plans[idx].state, vcsFor)
 				plans[idx].tasks = append(plans[idx].tasks, extra...)
 			}
 		}

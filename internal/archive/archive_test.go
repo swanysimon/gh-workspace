@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -363,5 +364,95 @@ func TestArchiveWithWorktreeYesSkipsPrompt(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("clone dir should be gone, stat err = %v", err)
+	}
+}
+
+// requireJJ skips a test that drives the real jj binary when jj is not
+// installed, and pins jj's configuration away from the developer's own.
+// Duplicated from the same-shaped helpers in internal/jjcli, internal/vcs
+// and internal/engine, matching how initTestRepo is handled here.
+func requireJJ(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not installed")
+	}
+	cfg := filepath.Join(t.TempDir(), "jj.toml")
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JJ_CONFIG", cfg)
+	t.Setenv("JJ_USER", "Test")
+	t.Setenv("JJ_EMAIL", "test@example.com")
+}
+
+// A jj workspace is as fatal to orphan as a git worktree, and jj has no
+// "remove" of its own -- forgetting a workspace leaves its directory on
+// disk -- so this is the path where the removal is this tool's own code
+// rather than the VCS's.
+func TestArchiveWithJJWorkspaceRemovesOnConfirm(t *testing.T) {
+	requireJJ(t)
+	repo, dir, archivesDir, clone := setupArchiveRepo(t)
+
+	if _, err := execx.Run(context.Background(), dir, "jj", "git", "init", "--colocate"); err != nil {
+		t.Fatalf("jj git init: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if _, err := execx.Run(context.Background(), dir, "jj", "workspace", "add", "--name", "feature", "--", wtPath); err != nil {
+		t.Fatalf("jj workspace add: %v", err)
+	}
+
+	var gotCount int
+	confirm := func(repoName string, wt []WorktreeStatus) (bool, error) {
+		gotCount = len(wt)
+		return true, nil
+	}
+
+	if _, _, err := Archive(context.Background(), execx.Run, testTimeout, confirm, repo, dir, archivesDir, clone); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if gotCount != 1 {
+		t.Errorf("confirm saw %d workspaces, want 1", gotCount)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("workspace should be gone, stat err = %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("clone dir should be gone, stat err = %v", err)
+	}
+	// The manifest is still read with git, which is the whole point of
+	// cloning colocated.
+	if _, err := os.Stat(TarballPath(archivesDir, "repo1")); err != nil {
+		t.Errorf("tarball missing: %v", err)
+	}
+	if _, ok := ReadManifest(ManifestPath(archivesDir, "repo1")); !ok {
+		t.Error("manifest missing")
+	}
+}
+
+func TestArchiveWithJJWorkspaceRefusesByDefault(t *testing.T) {
+	requireJJ(t)
+	repo, dir, archivesDir, clone := setupArchiveRepo(t)
+
+	if _, err := execx.Run(context.Background(), dir, "jj", "git", "init", "--colocate"); err != nil {
+		t.Fatalf("jj git init: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if _, err := execx.Run(context.Background(), dir, "jj", "workspace", "add", "--name", "feature", "--", wtPath); err != nil {
+		t.Fatalf("jj workspace add: %v", err)
+	}
+
+	confirm := func(string, []WorktreeStatus) (bool, error) { return false, nil }
+
+	if _, _, err := Archive(context.Background(), execx.Run, testTimeout, confirm, repo, dir, archivesDir, clone); err == nil {
+		t.Fatal("expected an error when the workspace removal is declined")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("workspace should still exist: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("clone dir should still exist: %v", err)
+	}
+	if _, err := os.Stat(TarballPath(archivesDir, "repo1")); !os.IsNotExist(err) {
+		t.Errorf("tarball should not exist, stat err = %v", err)
 	}
 }

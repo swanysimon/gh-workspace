@@ -1981,26 +1981,53 @@ Each step is its own jj change (`jj new -m ...`) before any edits.
         since it fits neither the existing `shared` nor `syncAndClone`
         group, and that test counts entries so a miscategorized setting
         fails it.
-- [ ] jj: `jj new -m "feat(engine): clone, fetch and archive through the
+- [x] jj: `jj new -m "feat(engine): clone, fetch and archive through the
       vcs seam"`.
-  - [ ] `engine.Task` gains `VCS` (the configured kind for this repo) and
+  - [x] `engine.Task` gains `VCS` (the configured kind for this repo) and
         `Adopt`. `Adopt` is decided at **build** time, so `--dry-run`
         reports it in the task's reason instead of surprising the user on
-        the next real run.
-  - [ ] `CloneInto` -> `vcs.Clone`; `processTask`'s fetch -> `vcs.Fetch`;
+        the next real run. The zero `VCS` ("") means git, so every `Task`
+        literal in the existing tests kept working untouched.
+  - [x] One new `resolveVCS(dir, configured, act)` holds engine's only
+        addition to `vcs.Resolve`: it clears `Adopt` for any action that
+        does not leave a live clone behind (`Archive`, `AdoptArchived`,
+        `Unarchive`), so `Adopt` means exactly "this run will adopt" and
+        `processTask` never has to ask again.
+  - [x] `BuildExplicitTasks` gained a `configuredVCS func(repoName)
+        string` parameter (nil means `env.Settings.VCS`). `BuildTasks` can
+        read `env.Settings.VCS` directly — an owner listing is by
+        definition one owner's config — but the repos reaching
+        `BuildExplicitTasks` are the individually configured ones, which
+        are exactly the ones allowed a per-repo override. `cli/sync.go`
+        passes a closure over `settings.ApplyRepoOverrides`.
+  - [x] `CloneInto` -> `vcs.Clone` (taking the kind explicitly: there is
+        no clone to detect from yet); `processTask`'s fetch -> `vcs.Fetch`;
         `gitcli.UpdateWorktree` -> `vcs.UpdateWorkingCopy`. Adoption runs
         at the top of `processTask` for `Skip` and `Fetch` (one local
         command, no network) but not for the archive actions — archiving a
         repo should not convert it first. Adopting on `Skip` is a
         deliberate exception to "an unchanged repo does no work at all":
         otherwise a `vcs: jj` change would not take effect until the repo
-        next changed upstream.
-  - [ ] `archive.ConfirmAndRemoveWorktrees` moves to `vcs.Worktrees` +
+        next changed upstream. An adoption *failure* is `res.Err` (that
+        repo fails and is retried, state untouched) rather than a warning:
+        the user asked for jj and it did not happen. A *dirty* clone is a
+        warning that repeats every run, matching the dirty-tree
+        precedent.
+  - [x] Folded the three copies of "default branch name, or empty" in
+        `processTask` into `defaultBranchOf(repo)` rather than adding a
+        fourth for adoption.
+  - [x] `archive.ConfirmAndRemoveWorktrees` moves to `vcs.Worktrees` +
         `vcs.WorktreeRemove`; `archive.Archive`'s manifest reads stay on
-        `gitcli`. `fixupRename`'s `SetRemoteURL` -> `vcs.SetRemoteURL`.
-  - [ ] Tests: configured-jj clone, adopt-on-skip, dirty-clone-not-
-        adopted, the dry-run reason text, and an archive of a jj clone
-        whose workspace is forgotten and removed.
+        `gitcli`. `fixupRename`'s `SetRemoteURL` -> `vcs.SetRemoteURL`,
+        plus the `AIDEV:` comment recording that moving a clone's
+        directory breaks any working copy linked to it (both kinds).
+  - [x] Tests: `resolveVCS` table (every action, including that archiving
+        does not adopt); a configured-jj clone landing colocated;
+        adopt-on-skip leaving the planned action alone; a dirty clone not
+        adopted and warning instead; the dry-run reason text; a per-repo
+        override reaching the task; and, in `archive`, a jj clone whose
+        workspace is forgotten *and* whose directory is removed, plus the
+        refusal case leaving both in place.
 - [ ] jj: `jj new -m "feat(worktree): jj workspaces"`.
   - [ ] `cmdWorktreeAdd`: `fetchRepo` -> `vcs.Fetch`; `worktreeAddArgs` +
         `runGit` -> one `vcs.WorktreeAdd(...) (note string, err error)`
