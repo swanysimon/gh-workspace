@@ -5,9 +5,6 @@ worktrees, for any mix of whole orgs/users and individual repos. It's often conv
 repositories available ahead of time, either for reference with coding agents or just to not have to
 re-clone information.
 
-See `AIDEV.md` for the full design history and the still-open questions; this file is the short,
-load-bearing summary of how the tool actually behaves.
-
 ## The workspace model
 
 A repo is **tracked** if either of these is true:
@@ -34,23 +31,24 @@ configuration. A jj worktree is a `jj workspace`, which is not a git repo.
 
 ## Commands
 
-The CLI is installed as a `gh` extension (`gh extension install swanysimon/gh-workspace`):
+The CLI is installed as a `gh` extension (`gh extension install swanysimon/gh-workspace`); full flag
+documentation lives in README.md, not here:
 
-* `gh workspace [flags] <owner>` / `gh workspace sync [flags] [<owner>[/<repo>]]` - sync every tracked
+- `gh workspace [flags] <owner>` / `gh workspace sync [flags] [<owner>[/<repo>]]` - sync every tracked
   repo (no args), one owner's full listing, or one repo
-* `gh workspace sync --tracked-only` - skip owner listings; refresh only repos already present locally or
+- `gh workspace sync --tracked-only` - skip owner listings; refresh only repos already present locally or
   in state
-* `gh workspace clone <owner>/<repo>...` - track each argument, cloning if missing; otherwise the same
+- `gh workspace clone <owner>/<repo>...` - track each argument, cloning if missing; otherwise the same
   skip/fetch/archive logic as sync
-* `gh workspace untrack <owner>/<repo>` - clear an explicit track; never deletes local data
-* `gh workspace worktree add <owner>/<repo> <branch> [path]` - clone first if needed (and track), then add
+- `gh workspace untrack <owner>/<repo>` - clear an explicit track; never deletes local data
+- `gh workspace worktree add <owner>/<repo> <branch> [path]` - clone first if needed (and track), then add
   a worktree. If the repo is archived upstream, fail with a message (after the clone). On a jj repo this
   is `jj workspace add` and **no bookmark is created**: `<branch>` only selects the starting revision,
   and the command prints the `jj bookmark create` line to run
-* `gh workspace worktree remove <owner>/<repo> <path>` / `worktree remove <path>` - spin down a worktree;
+- `gh workspace worktree remove <owner>/<repo> <path>` / `worktree remove <path>` - spin down a worktree;
   the path-only form finds the owning repo via the worktree's own `.git` (or, for a jj workspace,
-  `.jj/repo`) file
-* `gh workspace worktree list [<owner>[/<repo>]]` - list worktrees for one repo, one owner, or (no
+  `.jj/repo`) file. Its own `--force` means "even if dirty" — unrelated to sync/clone's `--force`
+- `gh workspace worktree list [<owner>[/<repo>]]` - list worktrees for one repo, one owner, or (no
   argument) the whole workspace
 
 A no-op sync costs one API call per configured owner, plus one batched lookup covering every explicitly
@@ -61,6 +59,37 @@ to the repository — a JSON manifest next to the tarball (`archives/<name>.json
 tags and timestamps together: the default branch's head commit (SHA, commit time, subject), every tag
 (name, SHA, creation time), GitHub's `pushedAt`/`archivedAt` timestamps, and the tarball's size and
 SHA-256.
+
+## Project organization
+
+`main.go` only calls `internal/cli.Run`. Everything else is layered so a package only ever depends on
+what's below it, never sideways into a peer and never back up into `cli`:
+
+```
+cli        command dispatch, flag/env/config resolution, help text — the only package that knows
+           command names or flag syntax
+settings   the resolvable config (flags/env/file/defaults) and the config file's own shape
+engine     orchestration: given repos + previous state, builds tasks (via plan), runs them on a
+           worker pool, reports results
+plan       pure decision logic — no filesystem, no subprocess, no clock, table-testable with plain
+           structs
+archive    tarball + manifest + delete, for the one archiving step engine calls into
+vcs        the git/jj dispatch seam for anything that *mutates* a clone or worktree
+ghcli      the only package that calls the gh CLI
+gitcli     the only package that runs git
+jjcli      the only package that runs jj
+store      on-disk layout: state.json, locks, repo-name validation
+execx      the only package that actually starts a subprocess
+```
+
+Every package below `cli` takes plain arguments (an `execx.Exec`, a timeout, a root/owner string) rather
+than this repo's `config`/`settings.Settings` struct, specifically so it has no dependency on anything
+above it. Keep new code on that side of the line: if you're tempted to pass `config` into `internal/plan`
+or `internal/store`, that's a sign the logic belongs in `engine` or `cli` instead.
+
+Within that shape, prefer the existing package for a thing over adding a new one. A new file in an
+existing package beats a new package; a new package is for a genuinely new concern (a new VCS, a new
+output format), not a place to put "the next few functions."
 
 ## Invariants
 
@@ -82,8 +111,7 @@ SHA-256.
 - **The user always specifies where a worktree lives** — where the command runs, a configured
   `worktreeRoot`/`worktreePath` template, or an explicit path are the only three ways a worktree's
   location is decided. The central clones stay in one location; worktrees can go anywhere.
-- **Archiving a repo with a live worktree prompts first.** If an archived-upstream repo has a live `git
-  worktree`, the CLI asks before removing it to proceed with archiving (answers "no" and refuses on an
+- **Archiving a repo with a live worktree prompts first.** If an archived-upstream repo has a live `git worktree`, the CLI asks before removing it to proceed with archiving (answers "no" and refuses on an
   unattended run with no terminal on stdin, unless `--yes`). If the user agrees, it removes every worktree
   and then archives as normal.
 - **Which VCS manages a clone is detected, not configured.** A clone holding `.jj` is managed with jj
@@ -98,8 +126,76 @@ SHA-256.
 - **Per-owner locks, never a workspace-wide one.** A workspace-wide sync's tasks share one worker pool,
   but each owner's lock/state is independent: another run holding one owner's lock gets that owner
   skipped and reported, while every other owner still finishes and the run exits non-zero.
+- **Never guess at config intent.** An unknown config key, a malformed `owners`/`repos` entry, or a bad
+  flag value is a hard error, not a best-effort fallback. This is deliberate and should hold for any new
+  setting too.
 
-## Process
+## Verification
+
+Before calling any change done, run all three — on this codebase they take under a minute combined, so
+there's no reason to skip them or to defer them to CI:
+
+```sh
+gofmt -l .              # must print nothing
+go vet ./...
+go test -count=1 ./...
+```
+
+CI (`.github/workflows/ci.yml`) runs the same three plus `-race`, on Linux and macOS, with `jj`
+installed. `-race` is slower; run it yourself before opening a PR if you touched anything concurrent
+(the worker pool in `engine`, the per-owner locking), otherwise it's fine to let CI catch it. A test that
+drives real `jj` skips itself when `jj` isn't on `PATH` — don't rely on that test alone for jj-specific
+behavior if you don't have `jj` installed locally.
+
+A change isn't finished until `gofmt` is silent and `go test` is green. Not "finished modulo a follow-up
+to fix formatting" — actually done.
+
+## Testing the CLI surface
+
+`internal/cli/pin_test.go` pins the CLI's entire visible surface — every command's exact `--help` text
+(usage line, flag list, descriptions, defaults), exit codes, and usage-error output — against the real
+entry points. This exists so that changing a flag's name, default, help text, or which command accepts
+it is never an accident: the test fails, by design, the moment the output changes.
+
+That means:
+
+- Adding, removing, renaming, or re-scoping a flag (which commands accept it — see `settingsTable` in
+  `internal/settings/settings.go`) must update the matching pin test in the same change. A pin test
+  failure is either "yes, I meant to change that, here's the updated expectation" or a caught regression
+  — never something to silence by weakening the assertion.
+- A new command or subcommand needs its own pin coverage for its `--help` output and exit codes before
+  it counts as tested, not just a happy-path test of its behavior.
+- This is deliberately a drive-the-real-binary-and-diff-the-output kind of test, not output sampled from
+  internals — it's the only way it actually catches what a user or script would see change.
+
+The same principle applies one level down: `internal/plan` is pure decision logic, so give it
+table-driven tests over plain structs rather than fixtures. Prefer driving real `git`/`jj` subprocesses in
+tests (as the existing suite does) over mocking them; `execx.Exec` is there to stub out `gh` specifically
+(network calls, no local binary needed to install as a precondition), not to replace git/jj behavior that
+the real binary would just as easily exercise.
+
+## Comments
+
+Default to none. Code should read from names and structure, not from prose next to it. Write a comment
+only when it records something the code can't say for itself: a non-obvious *why* — a constraint from an
+external tool's behavior, an invariant that would be easy to break by "simplifying," a deliberate
+difference from what looks like the obvious approach. Never write a comment that just restates what the
+line already says.
+
+If you're rewriting or touching a function that's carrying an old comment explaining *what* it does
+rather than *why*, feel free to delete it rather than preserve it out of caution.
+
+## Making changes
+
+Keep diffs small and scoped to one concern. If a change is naturally two ideas (e.g. a refactor plus a
+new feature, or a fix plus a drive-by cleanup), split it into two commits — or two reviewable steps —
+rather than bundling them because they happen to touch the same file.
+
+Commit messages are short and plain: `type(scope): what changed`, imperative, one line, matching the
+existing history (`feat(sync): record and act on repos missing upstream`, `fix(rename): repair linked
+working copies after a clone moves`). The scope is usually the package or command most affected. Save the
+"why" for the commit body only when the one-line summary genuinely can't carry it — most changes here
+don't need one.
 
 This is a jujutsu repository. Every phase of work — and every independently reviewable step within a
 large phase — gets its own dedicated jujutsu commit (`jj new -m "<description>"`) *before* any edits, to
