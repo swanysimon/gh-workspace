@@ -503,8 +503,8 @@ func TestIsDirtyRejectsMalformedOutput(t *testing.T) {
 func TestUpdateWorkingCopyLeavesAMergeAlone(t *testing.T) {
 	r := &recorder{out: map[string]string{
 		`log --no-graph -r @`: "true\x00",
-		`log --no-graph --ignore-working-copy -r main@origin`: "aaa\n",
-		`log --no-graph --ignore-working-copy -r @-`:          "bbb\nccc\n",
+		`log --no-graph --ignore-working-copy -r remote_bookmarks`: "aaa\n",
+		`log --no-graph --ignore-working-copy -r @-`:               "bbb\nccc\n",
 	}}
 	warning, dirty, err := UpdateWorkingCopy(context.Background(), r.exec, testTimeout, "/d", "main")
 	if err != nil {
@@ -517,5 +517,17 @@ func TestUpdateWorkingCopyLeavesAMergeAlone(t *testing.T) {
 		if len(c) > 1 && c[1] == "new" {
 			t.Fatal("must not run jj new when the parent is a merge")
 		}
+	}
+}
+
+func TestBookmarkRevsetsEscapeNames(t *testing.T) {
+	// A name is matched literally, never evaluated: without escaping, a
+	// name containing a quote would end the string literal and the rest
+	// would be parsed as revset syntax.
+	if got, want := LocalBookmark(`we"ird\`), `bookmarks(exact:"we\"ird\\")`; got != want {
+		t.Errorf("LocalBookmark = %q, want %q", got, want)
+	}
+	if got, want := RemoteBookmark("main"), `remote_bookmarks(exact:"main", exact:"origin")`; got != want {
+		t.Errorf("RemoteBookmark = %q, want %q", got, want)
 	}
 }

@@ -141,13 +141,12 @@ func UpdateWorkingCopy(ctx context.Context, run execx.Exec, timeout time.Duratio
 		return "working copy has changes, left untouched", true, nil
 	}
 
-	target := defaultBranch + "@origin"
-	targetIDs, err := Resolve(ctx, run, timeout, dir, target)
+	targetIDs, err := Resolve(ctx, run, timeout, dir, RemoteBookmark(defaultBranch))
 	if err != nil {
 		return "", false, err
 	}
 	if len(targetIDs) != 1 {
-		return fmt.Sprintf("no remote bookmark %q, left untouched", target), false, nil
+		return fmt.Sprintf("no remote bookmark %q, left untouched", defaultBranch+"@origin"), false, nil
 	}
 
 	parentIDs, err := Resolve(ctx, run, timeout, dir, "@-")
@@ -163,10 +162,32 @@ func UpdateWorkingCopy(ctx context.Context, run execx.Exec, timeout time.Duratio
 		return "working copy sits on a merge, left untouched", false, nil
 	}
 
-	if _, err := Run(ctx, run, timeout, dir, "new", target); err != nil {
-		return fmt.Sprintf("could not move the working copy to %s: %v", target, err), false, nil
+	if _, err := Run(ctx, run, timeout, dir, "new", targetIDs[0]); err != nil {
+		return fmt.Sprintf("could not move the working copy to %s@origin: %v", defaultBranch, err), false, nil
 	}
 	return "", false, nil
+}
+
+// LocalBookmark and RemoteBookmark build the revset that matches exactly
+// one bookmark by name. They exist instead of the shorthand "<name>" and
+// "<name>@origin" because a name reaches here from a branch argument or
+// from GitHub's API, and revsets are an expression language: pasted
+// straight in, a name containing an operator would be evaluated rather
+// than matched. jj's "exact:" pattern plus escaped string literals mean
+// any name at all is matched literally, with nothing to validate or
+// reject.
+func LocalBookmark(name string) string {
+	return `bookmarks(exact:` + quote(name) + `)`
+}
+
+func RemoteBookmark(name string) string {
+	return `remote_bookmarks(exact:` + quote(name) + `, exact:"origin")`
+}
+
+var revsetEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+func quote(s string) string {
+	return `"` + revsetEscaper.Replace(s) + `"`
 }
 
 // Resolve returns every commit a revset resolves to, newest first, or an

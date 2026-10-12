@@ -1908,23 +1908,49 @@ Each step is its own jj change (`jj new -m ...`) before any edits.
         `advance-bookmarks` set, which changes what `jj new` does to
         bookmarks, so without it a local run would not be testing what CI
         tests.
-- [ ] jj: `jj new -m "feat(vcs): git/jj dispatch seam"`.
-  - [ ] `internal/vcs/vcs.go`: `Kind`, `Detect`, `Resolve`, `RepoRoot`,
+- [x] jj: `jj new -m "feat(vcs): git/jj dispatch seam"`.
+  - [x] `internal/vcs/vcs.go`: `Kind`, `Detect`, `Resolve`, `RepoRoot`,
         and the dispatch functions. `Worktrees` for git reuses
         `gitcli.LinkedWorktrees` + `gitcli.IsDirty` per path (what
-        `archive.ConfirmAndRemoveWorktrees` does today); for jj it is the
-        single `jjcli.Workspaces` call. `WorktreeListText` is a
-        passthrough of `git worktree list` / `jj workspace list`, so
+        `archive.ConfirmAndRemoveWorktrees` does today); for jj it is
+        `jjcli.Workspaces` plus `jjcli.IsDirty` per workspace path, for
+        the staleness reason recorded under Phase 6.1. `WorktreeListText`
+        is a passthrough of `git worktree list` / `jj workspace list`, so
         `worktree list`'s output is unchanged for git repos.
-  - [ ] `RepoRoot(path)` absorbs the `.git`-file parsing currently inline
+  - [x] `WorktreeAdd` absorbed `cli.worktreeAddArgs` outright instead of
+        only dispatching to it: it now runs the add itself and returns the
+        *note* to print rather than argv to run, because the two kinds
+        have nothing in common to hand back (git creates a branch, jj
+        creates nothing and has to say so). Both kinds validate the branch
+        name with `git check-ref-format` — a GitHub branch is a git ref
+        whichever VCS is local, and it is the check the git path already
+        trusted.
+  - [x] **Added to `jjcli` in this step, not Phase 6.1**:
+        `LocalBookmark`/`RemoteBookmark` build `bookmarks(exact:"...")`
+        revsets with escaped string literals, and `UpdateWorkingCopy` was
+        switched onto them. Revsets are an expression language and a
+        branch name arrives from an argument or from GitHub's API, so
+        pasting `<name>@origin` straight in would evaluate a name
+        containing an operator instead of matching it. `jj workspace add
+        -r` and `jj new` are then handed the resolved *commit id*, never a
+        name.
+  - [x] `RepoRoot(path)` absorbs the `.git`-file parsing currently inline
         in `cli.resolveWorktreeOwnerRepo` and adds the `.jj/repo` form
         (relative path resolved against `<path>/.jj`, then strip the
         `/.jj/repo` suffix). The `<root>/<owner>/repos/<repo>` layout
         check and its symlink handling stay in `cli` — that is `store`
         layout knowledge, not VCS knowledge.
-  - [ ] Tests: `Detect`/`Resolve` table over a temp tree; `RepoRoot` for
-        both file forms plus "this is a clone, not a worktree" and
-        malformed input.
+  - [x] Tests: `Detect`/`Resolve` tables; `RepoRoot` against a real git
+        worktree and a real jj workspace (the relative-`.jj/repo` case),
+        plus the clone and plain-directory refusals. `WorktreeAdd`,
+        `Worktrees`, `WorktreeRemove` and `Fetch`+`UpdateWorkingCopy` are
+        each run against **both** kinds from one subtest table, so a
+        dispatch that silently sent one kind down the other's path could
+        not pass. Plus: jj `worktree add` creates no bookmark and flattens
+        `feature/x` to a `feature-x` workspace, a dirty worktree is
+        refused without `--force` for both kinds, and the jj removal
+        refuses a path that is not one of this clone's own workspaces
+        (it is the one that does the `os.RemoveAll` itself).
 - [ ] jj: `jj new -m "feat(config): vcs setting, per owner and per repo"`.
   - [ ] `settings`: `Settings.VCS` + `Default` + `Validate`, the
         `settingsTable` entry (`--vcs`, `GH_WORKSPACE_VCS`, `vcs`, for
