@@ -481,7 +481,7 @@ func runWorkspacePlans(ctx context.Context, cfg config, plans []ownerWorkPlan, s
 	}
 
 	fmt.Fprintf(stderr, "syncing %d owner(s)\n", len(owners))
-	outcomes := engine.MultiOwnerRun(ctx, cfg.Settings.Concurrency, owners, stderr)
+	outcomes := engine.MultiOwnerRun(ctx, cfg.Settings.Concurrency, cfg.Verbose, owners, stderr)
 
 	var cloned, fetched, archived, skipped, failed int
 	failed += failedOwners

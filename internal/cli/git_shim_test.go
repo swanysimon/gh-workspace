@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,8 +90,10 @@ func TestCloneRepoShimSelectsHTTPSURL(t *testing.T) {
 // with its last callers: worktree add/remove/list now go through
 // internal/vcs, which runs the commands itself.)
 func TestGitShimsForwardDirAndTimeout(t *testing.T) {
-	const wantDir = "/shim/test/dir"
 	cfg := defaultConfig()
+	cfg.Root = "/shim/test"
+	cfg.Owner = "o"
+	wantDir := filepath.Join(reposDir(cfg), "r")
 
 	var gotDir string
 	cfg.Deps.exec = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -105,7 +108,7 @@ func TestGitShimsForwardDirAndTimeout(t *testing.T) {
 		name string
 		call func()
 	}{
-		{"fetchRepo", func() { fetchRepo(context.Background(), cfg, wantDir) }},
+		{"fetchRepo", func() { fetchRepo(context.Background(), cfg, "r", io.Discard) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

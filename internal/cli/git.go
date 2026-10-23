@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 
 	"github.com/swanysimon/gh-workspace/internal/engine"
 	"github.com/swanysimon/gh-workspace/internal/execx"
@@ -34,6 +35,6 @@ func cloneRepo(ctx context.Context, cfg config, repo ghRepo) error {
 // disappear locally too, whichever VCS manages the clone. Still a real
 // shim: worktree add fetches an already-cloned repo before adding a
 // worktree, a path engine's task orchestration doesn't cover.
-func fetchRepo(ctx context.Context, cfg config, dir string) error {
-	return vcs.Fetch(ctx, cfg.Deps.exec, cfg.Timeout, dir)
+func fetchRepo(ctx context.Context, cfg config, repoName string, stderr io.Writer) error {
+	return engine.FetchOne(ctx, buildEnv(cfg), repoName, stderr)
 }
