@@ -189,6 +189,30 @@ func LinkedWorktrees(ctx context.Context, run execx.Exec, timeout time.Duration,
 	return paths, nil
 }
 
+// Branches lists the branch names a worktree could be added for: local
+// branches and origin's, deduplicated, without origin's symbolic HEAD.
+func Branches(ctx context.Context, run execx.Exec, timeout time.Duration, dir string) ([]string, error) {
+	out, err := execx.WithTimeout(ctx, timeout, run, dir, "git", "for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/origin/")
+	if err != nil {
+		return nil, fmt.Errorf("listing branches of %s: %w", dir, err)
+	}
+
+	seen := map[string]bool{}
+	var branches []string
+	for _, ref := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name, ok := strings.CutPrefix(ref, "refs/heads/")
+		if !ok {
+			name, _ = strings.CutPrefix(ref, "refs/remotes/origin/")
+		}
+		if name == "" || name == "HEAD" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		branches = append(branches, name)
+	}
+	return branches, nil
+}
+
 // RepairWorktrees re-points every worktree attached to dir after dir
 // itself has moved. A linked worktree's ".git" file names an absolute path
 // inside the clone, so moving the clone breaks all of them; git has a

@@ -17,6 +17,9 @@ That pulls a prebuilt binary, so there's no Go toolchain to install. You do need
 authenticated (`gh auth login`) and `git` on `PATH`; add `jj` too if you're using
 [jujutsu](#using-jujutsu) for any repo.
 
+For Tab completion of commands, owners, repos, branches and worktrees, add one line to your shell
+setup — see [`completion`](#completion).
+
 Upgrading later is the same shape:
 
 ```sh
@@ -60,6 +63,7 @@ gh workspace untrack [flags] <owner>/<repo>
 gh workspace worktree add [flags] <owner>/<repo> <branch> [path]
 gh workspace worktree remove [--force] [flags] <owner>/<repo> <path> | <path>
 gh workspace worktree list [flags] [<owner>/<repo>|<owner>]
+gh workspace completion <bash|zsh|fish>
 ```
 
 Every command accepts `--root`, `--timeout`, `--protocol`, and `--config` — see
@@ -176,6 +180,30 @@ explicit `path` argument always wins over the template — resolved against your
 exactly as before any of this existed, and not subject to the under-`worktreeRoot` check. You
 always get to say where a worktree lives, whether that's by where you ran the command, a
 configured template, or just typing the path.
+
+### `completion`
+
+Prints a shell script that makes Tab complete `gh workspace`'s commands, then owners and repos,
+then branches for `worktree add` and worktree paths for `worktree remove`. Candidates come from
+what's already on disk (clones, `state.json`) and the config's `owners`/`repos`, never from
+GitHub, so Tab stays instant. A repo the workspace has never seen still has to be typed out.
+
+`gh` completes the names of installed extensions but nothing after them
+([cli/cli#5309](https://github.com/cli/cli/issues/5309)), so the script wraps `gh`'s own
+completion rather than replacing it. Set that up first (`gh completion --help`), then:
+
+```sh
+# bash, in ~/.bashrc after bash-completion is loaded (gh's completion needs it)
+eval "$(gh workspace completion bash)"
+
+# zsh, in ~/.zshrc after compinit
+eval "$(gh workspace completion zsh)"
+
+# fish, once; conf.d rather than completions/, since gh's own completions file erases others
+gh workspace completion fish > ~/.config/fish/conf.d/gh-workspace.fish
+```
+
+PowerShell isn't supported: `gh`'s PowerShell completer has no function to wrap.
 
 ## Configure
 

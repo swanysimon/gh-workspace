@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -71,6 +72,51 @@ func ReposDir(root, owner string) string    { return filepath.Join(OwnerDir(root
 func ArchivesDir(root, owner string) string { return filepath.Join(OwnerDir(root, owner), "archives") }
 func StatePath(root, owner string) string   { return filepath.Join(OwnerDir(root, owner), "state.json") }
 func LockPath(root, owner string) string    { return filepath.Join(OwnerDir(root, owner), "lock") }
+
+// Owners lists the directories under root that hold an owner's clones or
+// state; anything else a user keeps under root is not an owner.
+func Owners(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var owners []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if exists(ReposDir(root, e.Name())) || exists(StatePath(root, e.Name())) {
+			owners = append(owners, e.Name())
+		}
+	}
+	return owners, nil
+}
+
+// ClonedRepos lists the repos with a central clone under owner. A
+// ".tmp-" directory is a clone still in progress (or abandoned by a
+// crashed run) and already holds a .git, so it is excluded by name.
+func ClonedRepos(root, owner string) ([]string, error) {
+	dir := ReposDir(root, owner)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var repos []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".tmp-") || !ValidRepoName(e.Name()) {
+			continue
+		}
+		if exists(filepath.Join(dir, e.Name(), ".git")) {
+			repos = append(repos, e.Name())
+		}
+	}
+	return repos, nil
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
 
 // AcquireLock takes the per-owner lock that serializes every command which
 // mutates an owner's clones or state (a sync run, and worktree add). It
