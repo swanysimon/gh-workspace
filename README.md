@@ -17,6 +17,9 @@ That pulls a prebuilt binary, so there's no Go toolchain to install. You do need
 authenticated (`gh auth login`) and `git` on `PATH`; add `jj` too if you're using
 [jujutsu](#using-jujutsu) for any repo.
 
+For Tab completion of commands, owners, repos, branches and worktrees, add one line to your shell
+setup — see [`completion`](#completion).
+
 Upgrading later is the same shape:
 
 ```sh
