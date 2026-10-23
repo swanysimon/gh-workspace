@@ -87,6 +87,13 @@ listing or repo, configured or not. `--tracked-only` skips every owner listing e
 refreshes what's already on disk or in state — the cheap option when you just want to check on
 the handful of repos you actually cloned out of a huge org.
 
+While it runs, every repo being cloned, fetched or archived gets a live line on stderr with its
+action and elapsed time, under a running `[done/total]` count; finished repos drop off, leaving
+only the final summary. `-v` keeps a line for each repo as it finishes instead. `clone` and
+`worktree add` show the same line for the clone or fetch they do. When stderr isn't a terminal
+(a pipe, a log file, CI) the display is plain text instead: one `[n/total] owner/repo: action`
+line per repo as it starts, plus one as it finishes under `-v`.
+
 Bare `gh workspace <owner>` works as an undocumented shorthand for `sync <owner>`, as long as
 `<owner>` isn't one of the words `sync`, `clone`, `untrack`, or `worktree` — an org with one of
 those names needs the explicit `sync <name>` form to avoid the ambiguity.
@@ -192,7 +199,7 @@ Precedence is **flags > environment > config file > defaults**.
 | `--tracked-only` | — | — | `false` | sync | skip owner listings; refresh only repos already present locally or in state |
 | `--archive-missing` | — | — | `false` | sync | tarball the clones of repos that no longer resolve upstream (never deletes) |
 | `--dry-run` | — | — | `false` | sync | print planned actions, do nothing |
-| `-v`, `--verbose` | — | — | `false` | sync | verbose output (e.g. reports skipped forks) |
+| `-v`, `--verbose` | — | — | `false` | sync | verbose output (e.g. reports skipped forks, keeps a progress line per finished repo) |
 | `--yes` | — | — | `false` | sync | don't prompt before removing worktrees to archive a repo they belong to |
 | `--config` | `GH_WORKSPACE_CONFIG` | — | see below | all | path to the JSON config file |
 
