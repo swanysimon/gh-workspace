@@ -246,6 +246,35 @@ func TestPinExitCodes(t *testing.T) {
 	})
 }
 
+// TestPinCompleteProtocol pins the hidden __complete command's contract
+// with gh's cobra-generated completer: candidates one per line, then
+// ":<directive>", exit 0, nothing on stderr -- even for input it can't
+// make sense of, since its output lands under the user's cursor. It is
+// absent from every help text (TestPinTopLevelHelp pins that exactly).
+func TestPinCompleteProtocol(t *testing.T) {
+	homeFor(t)
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"__complete"}, ":4\n"},
+		{[]string{"__complete", "work"}, "worktree\n:4\n"},
+		{[]string{"__complete", "--help"}, ":4\n"},
+		{[]string{"__complete", "worktree", "add", "--help", ""}, ":1\n"},
+		{[]string{"__complete", "worktree", "add", "--nope", ""}, ":1\n"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), tc.args, &stdout, &stderr)
+			if code != exitSuccess || stdout.String() != tc.want || stderr.Len() != 0 {
+				t.Fatalf("Run(%q) = %d, stdout %q, stderr %q; want %d, stdout %q, no stderr",
+					tc.args, code, stdout.String(), stderr.String(), exitSuccess, tc.want)
+			}
+		})
+	}
+}
+
 // TestPinDashDashEndsFlagParsing exercises "--" through the real entry
 // points (run and cmdWorktreeRemove), not the parseInterspersed helper
 // directly (TestParseInterspersed already pins that unit in isolation, but

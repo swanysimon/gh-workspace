@@ -68,6 +68,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return cmdUntrack(ctx, args[1:], stdout, stderr)
 		case "sync":
 			return runSync(ctx, args[1:], stdout, stderr)
+		case "__complete":
+			return cmdComplete(ctx, args[1:], stdout)
 		}
 	}
 
