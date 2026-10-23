@@ -93,7 +93,9 @@ func TestComplete(t *testing.T) {
 		words []string
 		want  string
 	}{
-		{[]string{""}, "sync\nclone\nuntrack\nworktree\n:4\n"},
+		{[]string{""}, "sync\nclone\nuntrack\nworktree\ncompletion\n:4\n"},
+		{[]string{"completion", ""}, "bash\nzsh\nfish\n:4\n"},
+		{[]string{"completion", "bash", ""}, ":4\n"},
 		{[]string{"w"}, "worktree\n:4\n"},
 		{[]string{"nope", ""}, ":4\n"},
 		{[]string{"worktree", ""}, "add\nremove\nlist\n:4\n"},

@@ -68,6 +68,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return cmdUntrack(ctx, args[1:], stdout, stderr)
 		case "sync":
 			return runSync(ctx, args[1:], stdout, stderr)
+		case "completion":
+			return cmdCompletion(args[1:], stdout, stderr)
 		case "__complete":
 			return cmdComplete(ctx, args[1:], stdout)
 		}
@@ -341,6 +343,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  gh workspace worktree add [flags] <org>/<repo> <branch> [path]")
 	fmt.Fprintln(w, "  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>")
 	fmt.Fprintln(w, "  gh workspace worktree list [flags] [<org>/<repo>|<org>]")
+	fmt.Fprintln(w, "  "+completionUsage)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run \"gh workspace worktree <command> --help\" for a worktree command's flags.")
 	fmt.Fprintln(w)

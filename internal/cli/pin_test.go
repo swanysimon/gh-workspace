@@ -53,7 +53,8 @@ func TestPinTopLevelHelp(t *testing.T) {
 		"  gh workspace untrack [flags] <org>/<repo>\n" +
 		"  gh workspace worktree add [flags] <org>/<repo> <branch> [path]\n" +
 		"  gh workspace worktree remove [--force] [flags] <org>/<repo> <path> | <path>\n" +
-		"  gh workspace worktree list [flags] [<org>/<repo>|<org>]\n\n" +
+		"  gh workspace worktree list [flags] [<org>/<repo>|<org>]\n" +
+		"  gh workspace completion <bash|zsh|fish>\n\n" +
 		"Run \"gh workspace worktree <command> --help\" for a worktree command's flags.\n\n" +
 		"FLAGS\n" +
 		"      --root string        root directory for cloned orgs (default \"" + root + "\")\n" +
@@ -244,6 +245,55 @@ func TestPinExitCodes(t *testing.T) {
 				code, exitInterrupted, stdout.String(), stderr.String())
 		}
 	})
+}
+
+func TestPinCompletion(t *testing.T) {
+	homeFor(t)
+
+	t.Run("help", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(), []string{"completion", "--help"}, &stdout, &stderr)
+		want := "Print a script that makes Tab complete gh workspace's commands, orgs, repos,\n" +
+			"branches and worktrees.\n\n" +
+			"USAGE\n" +
+			"  gh workspace completion <bash|zsh|fish>\n\n" +
+			"gh completes extension names but nothing after them, so the script wraps gh's\n" +
+			"own completion: set that up first (see \"gh completion --help\"), then:\n\n" +
+			"  bash  add to ~/.bashrc, after bash-completion is loaded:\n" +
+			"          eval \"$(gh workspace completion bash)\"\n" +
+			"  zsh   add to ~/.zshrc, after compinit:\n" +
+			"          eval \"$(gh workspace completion zsh)\"\n" +
+			"  fish  run once:\n" +
+			"          gh workspace completion fish > ~/.config/fish/conf.d/gh-workspace.fish\n"
+		if code != exitSuccess || stdout.Len() != 0 || stderr.String() != want {
+			t.Fatalf("completion --help = %d, stdout %q, stderr:\n%s\nwant %d, no stdout, stderr:\n%s",
+				code, stdout.String(), stderr.String(), exitSuccess, want)
+		}
+	})
+
+	for _, args := range [][]string{{"completion"}, {"completion", "pwsh"}, {"completion", "bash", "zsh"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), args, &stdout, &stderr)
+			want := "usage: gh workspace completion <bash|zsh|fish>\n"
+			if code != exitUsage || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("Run(%q) = %d, stdout %q, stderr %q; want %d, no stdout, stderr %q",
+					args, code, stdout.String(), stderr.String(), exitUsage, want)
+			}
+		})
+	}
+
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), []string{"completion", shell}, &stdout, &stderr)
+			header := "# " + shell + " completion for gh workspace, from \"gh workspace completion " + shell + "\".\n"
+			if code != exitSuccess || !strings.HasPrefix(stdout.String(), header) || stderr.Len() != 0 {
+				t.Fatalf("completion %s = %d, stderr %q, stdout starting %q; want %d and the script",
+					shell, code, stderr.String(), stdout.String()[:min(len(header), stdout.Len())], exitSuccess)
+			}
+		})
+	}
 }
 
 // TestPinCompleteProtocol pins the hidden __complete command's contract

@@ -51,7 +51,7 @@ func complete(ctx context.Context, args []string) ([]string, int) {
 	}
 	words, partial := args[:len(args)-1], args[len(args)-1]
 	if len(words) == 0 {
-		return withPrefix([]string{"sync", "clone", "untrack", "worktree"}, partial), compNoFileComp
+		return withPrefix([]string{"sync", "clone", "untrack", "worktree", "completion"}, partial), compNoFileComp
 	}
 
 	var spec completionSpec
@@ -65,6 +65,11 @@ func complete(ctx context.Context, args []string) ([]string, int) {
 			return nil, compNoFileComp
 		}
 		words = words[2:]
+	case "completion":
+		if len(words) == 1 {
+			return withPrefix(completionShells, partial), compNoFileComp
+		}
+		return nil, compNoFileComp
 	default:
 		var ok bool
 		if spec, ok = completionSpecs[words[0]]; !ok {
