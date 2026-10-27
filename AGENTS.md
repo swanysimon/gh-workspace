@@ -77,6 +77,7 @@ engine     orchestration: given repos + previous state, builds tasks (via plan),
 plan       pure decision logic — no filesystem, no subprocess, no clock, table-testable with plain
            structs
 archive    tarball + manifest + delete, for the one archiving step engine calls into
+progress   live per-repo progress on a terminal, plain lines anywhere else
 vcs        the git/jj dispatch seam for anything that *mutates* a clone or worktree
 ghcli      the only package that calls the gh CLI
 gitcli     the only package that runs git
@@ -129,6 +130,10 @@ output format), not a place to put "the next few functions."
 - **Per-owner locks, never a workspace-wide one.** A workspace-wide sync's tasks share one worker pool,
   but each owner's lock/state is independent: another run holding one owner's lock gets that owner
   skipped and reported, while every other owner still finishes and the run exits non-zero.
+- **Nothing writes to stderr while a progress tracker is live.** The live block redraws by moving
+  the cursor up over its own rows, so any other output in between gets overwritten or leaves
+  stale rows behind. Print before `progress.New` or after `Stop`; anything that has to talk to the
+  terminal mid-run (the archive confirmation prompt) goes through `Tracker.Pause`.
 - **Never guess at config intent.** An unknown config key, a malformed `owners`/`repos` entry, or a bad
   flag value is a hard error, not a best-effort fallback. This is deliberate and should hold for any new
   setting too.

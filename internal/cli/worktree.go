@@ -261,7 +261,7 @@ func cmdWorktreeAdd(ctx context.Context, args []string, stdout, stderr io.Writer
 	// Failing to fetch (e.g. offline) is not fatal: the local refs may
 	// still be enough to add the worktree.
 	if dirExists {
-		if err := fetchRepo(ctx, cfg, dir); err != nil {
+		if err := fetchRepo(ctx, cfg, repo.Name, stderr); err != nil {
 			fmt.Fprintf(stderr, "warning: could not fetch before adding worktree, using local refs: %v\n", err)
 		}
 	}

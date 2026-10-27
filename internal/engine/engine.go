@@ -23,6 +23,7 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/execx"
 	"github.com/swanysimon/gh-workspace/internal/ghcli"
 	"github.com/swanysimon/gh-workspace/internal/plan"
+	"github.com/swanysimon/gh-workspace/internal/progress"
 	"github.com/swanysimon/gh-workspace/internal/settings"
 	"github.com/swanysimon/gh-workspace/internal/store"
 	"github.com/swanysimon/gh-workspace/internal/vcs"
@@ -89,7 +90,12 @@ func CloneInto(ctx context.Context, env Env, repo ghcli.Repo, kind vcs.Kind) err
 // is marked Tracked: true -- this is, by definition, an explicit add. The
 // caller must hold the owner's lock.
 func EnsureCloned(ctx context.Context, env Env, repo ghcli.Repo, stderr io.Writer) error {
-	if err := CloneInto(ctx, env, repo, vcs.Kind(env.Settings.VCS)); err != nil {
+	tr := progress.New(stderr, 1, env.Settings.Verbose)
+	item := tr.Start(env.Owner+"/"+repo.Name, actionVerbs[plan.Clone])
+	err := CloneInto(ctx, env, repo, vcs.Kind(env.Settings.VCS))
+	item.Done(err)
+	tr.Stop()
+	if err != nil {
 		return err
 	}
 
@@ -103,6 +109,17 @@ func EnsureCloned(ctx context.Context, env Env, repo ghcli.Repo, stderr io.Write
 	}
 	st.UpdatedAt = time.Now()
 	return store.SaveState(env.StatePath(), st)
+}
+
+// FetchOne fetches an existing clone, shown as progress like any other
+// fetch: worktree add refreshes the clone it is about to branch from.
+func FetchOne(ctx context.Context, env Env, repoName string, stderr io.Writer) error {
+	tr := progress.New(stderr, 1, env.Settings.Verbose)
+	item := tr.Start(env.Owner+"/"+repoName, actionVerbs[plan.Fetch])
+	err := vcs.Fetch(ctx, env.Exec, env.Settings.Timeout, filepath.Join(env.ReposDir(), repoName))
+	item.Done(err)
+	tr.Stop()
+	return err
 }
 
 // SyncOne resolves one repo's action via the same decision plan.Decide
@@ -146,7 +163,9 @@ func SyncOne(ctx context.Context, env Env, repo ghcli.Repo, explicit bool, stder
 	)
 
 	kind, adopt := resolveVCS(dir, env.Settings.VCS, act)
-	res := processTask(ctx, env, Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt}, nil)
+	tr := progress.New(stderr, 1, env.Settings.Verbose)
+	res := runTask(ctx, env.pausing(tr), Task{Repo: repo, Action: act, Reason: reason, Prev: prev, VCS: kind, Adopt: adopt}, tr)
+	tr.Stop()
 	if res.Err != nil {
 		return res, res.Err
 	}
@@ -553,14 +572,15 @@ type OwnerOutcome struct {
 // State, saves it, and calls its Release, so an interrupt loses progress
 // only for owners still in flight. A single shared progress reporter
 // covers every owner's actionable tasks, so a workspace-wide run reports
-// activity the same way a single-owner one does, just across more repos.
+// activity the same way a single-owner one does, just across more repos;
+// verbose keeps a line for each repo once it finishes.
 //
 // State mutation here mirrors the single-owner path (Run()'s own result
 // loop, and SyncOne): a fresh repo ID (from the task that produced the
 // result) wins over whatever was stored, Tracked carries forward from
 // whatever was already recorded, and a failed task's repo keeps its
 // previous state entry untouched so it's retried next time.
-func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr io.Writer) []OwnerOutcome {
+func MultiOwnerRun(ctx context.Context, poolSize int, verbose bool, owners []OwnerWork, stderr io.Writer) []OwnerOutcome {
 	type routedTask struct {
 		ownerIdx int
 		task     Task
@@ -598,7 +618,11 @@ func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr
 		}
 		tasksByOwnerName[i] = byName
 	}
-	progress := newProgressReporter(stderr, totalActionable)
+	tr := progress.New(stderr, totalActionable, verbose)
+	defer tr.Stop()
+	for i := range envs {
+		envs[i] = envs[i].pausing(tr)
+	}
 
 	if poolSize < 1 {
 		poolSize = 1
@@ -612,7 +636,7 @@ func MultiOwnerRun(ctx context.Context, poolSize int, owners []OwnerWork, stderr
 		go func() {
 			defer wg.Done()
 			for rt := range taskCh {
-				res := processTask(ctx, envs[rt.ownerIdx], rt.task, progress)
+				res := runTask(ctx, envs[rt.ownerIdx], rt.task, tr)
 				resultCh <- routedResult{ownerIdx: rt.ownerIdx, result: res}
 			}
 		}()
@@ -706,21 +730,6 @@ type Result struct {
 	Err          error
 }
 
-// progressReporter prints one line per non-skip task as a worker picks it
-// up, so a long sync run shows activity instead of going silent until the
-// final summary. It is safe for concurrent use by Env.Settings.Concurrency
-// workers.
-type progressReporter struct {
-	mu      sync.Mutex
-	w       io.Writer
-	total   int
-	started int
-}
-
-func newProgressReporter(w io.Writer, total int) *progressReporter {
-	return &progressReporter{w: w, total: total}
-}
-
 var actionVerbs = map[plan.Action]string{
 	plan.Clone:           "cloning",
 	plan.Fetch:           "fetching",
@@ -731,18 +740,35 @@ var actionVerbs = map[plan.Action]string{
 	plan.MissingUpstream: "checking",
 }
 
-func (p *progressReporter) starting(name string, act plan.Action) {
-	if p == nil {
-		return
+// runTask is processTask shown as progress. A skip is not: it does no
+// network work, and most of a no-op sync is skips.
+func runTask(ctx context.Context, env Env, t Task, tr *progress.Tracker) Result {
+	if t.Action == plan.Skip {
+		return processTask(ctx, env, t)
 	}
-	verb, ok := actionVerbs[act]
+	verb, ok := actionVerbs[t.Action]
 	if !ok {
-		verb = string(act)
+		verb = string(t.Action)
 	}
-	p.mu.Lock()
-	p.started++
-	fmt.Fprintf(p.w, "[%d/%d] %s: %s\n", p.started, p.total, name, verb)
-	p.mu.Unlock()
+	item := tr.Start(env.Owner+"/"+t.Repo.Name, verb)
+	res := processTask(ctx, env, t)
+	item.Done(res.Err)
+	return res
+}
+
+// pausing makes the archive confirmation prompt clear the live display
+// while it waits for an answer, instead of being redrawn over.
+func (e Env) pausing(tr *progress.Tracker) Env {
+	confirm := e.Confirm
+	if confirm == nil {
+		return e
+	}
+	e.Confirm = func(repoName string, worktrees []archive.WorktreeStatus) (bool, error) {
+		resume := tr.Pause()
+		defer resume()
+		return confirm(repoName, worktrees)
+	}
+	return e
 }
 
 // RunTasks fans work out to Env.Settings.Concurrency workers and fans
@@ -755,7 +781,9 @@ func RunTasks(ctx context.Context, env Env, tasks []Task, stderr io.Writer) []Re
 			actionable++
 		}
 	}
-	progress := newProgressReporter(stderr, actionable)
+	tr := progress.New(stderr, actionable, env.Settings.Verbose)
+	defer tr.Stop()
+	env = env.pausing(tr)
 
 	taskCh := make(chan Task)
 	resultCh := make(chan Result)
@@ -766,7 +794,7 @@ func RunTasks(ctx context.Context, env Env, tasks []Task, stderr io.Writer) []Re
 		go func() {
 			defer wg.Done()
 			for t := range taskCh {
-				resultCh <- processTask(ctx, env, t, progress)
+				resultCh <- runTask(ctx, env, t, tr)
 			}
 		}()
 	}
@@ -800,13 +828,9 @@ func defaultBranchOf(repo ghcli.Repo) string {
 	return repo.DefaultBranch.Name
 }
 
-func processTask(ctx context.Context, env Env, t Task, progress *progressReporter) Result {
+func processTask(ctx context.Context, env Env, t Task) Result {
 	repo := t.Repo
 	res := Result{Name: repo.Name, Action: t.Action}
-
-	if t.Action != plan.Skip {
-		progress.starting(repo.Name, t.Action)
-	}
 
 	// Adoption runs before the action, including before a Skip: a repo
 	// unchanged upstream otherwise does no work at all, and waiting for

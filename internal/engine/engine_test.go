@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/swanysimon/gh-workspace/internal/execx"
 	"github.com/swanysimon/gh-workspace/internal/ghcli"
 	"github.com/swanysimon/gh-workspace/internal/plan"
+	"github.com/swanysimon/gh-workspace/internal/progress"
 	"github.com/swanysimon/gh-workspace/internal/settings"
 	"github.com/swanysimon/gh-workspace/internal/store"
 	"github.com/swanysimon/gh-workspace/internal/vcs"
@@ -483,7 +486,7 @@ func TestMultiOwnerRunSavesEachOwnerIndependently(t *testing.T) {
 		},
 	}
 
-	outcomes := MultiOwnerRun(context.Background(), 2, owners, os.Stderr)
+	outcomes := MultiOwnerRun(context.Background(), 2, false, owners, os.Stderr)
 	if len(outcomes) != 2 {
 		t.Fatalf("got %d outcomes, want 2", len(outcomes))
 	}
@@ -527,7 +530,7 @@ func TestMultiOwnerRunReleasesOwnersWithNoTasks(t *testing.T) {
 		},
 	}
 
-	outcomes := MultiOwnerRun(context.Background(), 2, owners, os.Stderr)
+	outcomes := MultiOwnerRun(context.Background(), 2, false, owners, os.Stderr)
 	if len(outcomes) != 1 {
 		t.Fatalf("got %d outcomes, want 1", len(outcomes))
 	}
@@ -1021,5 +1024,49 @@ func TestSyncOneClearsMissingSinceWhenARepoComesBack(t *testing.T) {
 	after := store.LoadState(env.StatePath(), env.Owner, os.Stderr)
 	if !after.Repos["repo1"].MissingSince.IsZero() {
 		t.Errorf("MissingSince = %v, want it cleared", after.Repos["repo1"].MissingSince)
+	}
+}
+
+// TestRunTasksReportsProgressPerRepo confirms every non-skip task is shown
+// by owner/repo, a skip is not, and verbose adds a line as each finishes.
+func TestRunTasksReportsProgressPerRepo(t *testing.T) {
+	origin := initTestRepo(t)
+	env := testEnv(t)
+	env.Settings.Verbose = true
+	repo := ghcli.Repo{
+		ID: "R1", Name: "repo1", NameWithOwner: "shimorg/repo1",
+		URL: "file://" + origin, PushedAt: time.Now(), DefaultBranch: &ghcli.RefName{Name: "main"},
+	}
+
+	var stderr bytes.Buffer
+	results := RunTasks(context.Background(), env, []Task{
+		{Repo: repo, Action: plan.Clone},
+		{Repo: ghcli.Repo{Name: "unchanged"}, Action: plan.Skip},
+	}, &stderr)
+	if len(results) != 2 {
+		t.Fatalf("RunTasks: %+v", results)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+	if len(lines) != 2 || lines[0] != "[1/1] shimorg/repo1: cloning" || !strings.HasPrefix(lines[1], "[1/1] shimorg/repo1: cloning done in ") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+// TestPausingWrapsConfirm confirms the progress-pausing wrapper still asks
+// the original prompt and returns its answer.
+func TestPausingWrapsConfirm(t *testing.T) {
+	asked := ""
+	env := Env{Confirm: func(repoName string, _ []archive.WorktreeStatus) (bool, error) {
+		asked = repoName
+		return true, nil
+	}}
+	tr := progress.New(io.Discard, 1, false)
+	defer tr.Stop()
+	ok, err := env.pausing(tr).Confirm("repo1", nil)
+	if !ok || err != nil || asked != "repo1" {
+		t.Fatalf("Confirm = %v, %v; asked %q", ok, err, asked)
+	}
+	if (Env{}).pausing(tr).Confirm != nil {
+		t.Fatal("a nil Confirm should stay nil")
 	}
 }
