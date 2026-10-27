@@ -315,3 +315,45 @@ func TestValidRepoName(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnersAndClonedRepos(t *testing.T) {
+	root := t.TempDir()
+	mkdir := func(parts ...string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(append([]string{root}, parts...)...), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir("cloned", "repos", "app", ".git")
+	mkdir("cloned", "repos", ".github", ".git")
+	mkdir("cloned", "repos", ".tmp-app-123", ".git")
+	mkdir("cloned", "repos", "not-a-clone")
+	mkdir("stateonly")
+	if err := os.WriteFile(StatePath(root, "stateonly"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mkdir("notes")
+	if err := os.WriteFile(filepath.Join(root, "README"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	owners, err := Owners(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(owners, ","), "cloned,stateonly"; got != want {
+		t.Fatalf("Owners = %q, want %q", got, want)
+	}
+
+	repos, err := ClonedRepos(root, "cloned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(repos, ","), ".github,app"; got != want {
+		t.Fatalf("ClonedRepos = %q, want %q", got, want)
+	}
+
+	if _, err := ClonedRepos(root, "stateonly"); !os.IsNotExist(err) {
+		t.Fatalf("ClonedRepos without a repos dir: err = %v, want not-exist", err)
+	}
+}

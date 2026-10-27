@@ -134,6 +134,25 @@ type Worktree struct {
 // for both kinds — git status there, or jj's snapshot of that workspace —
 // so it is live rather than whatever the repo last recorded.
 func Worktrees(ctx context.Context, run execx.Exec, timeout time.Duration, dir string) ([]Worktree, error) {
+	out, err := WorktreePaths(ctx, run, timeout, dir)
+	if err != nil {
+		return nil, err
+	}
+	isDirty := gitcli.IsDirty
+	if Detect(dir) == JJ {
+		isDirty = jjcli.IsDirty
+	}
+	for i, w := range out {
+		if out[i].Dirty, err = isDirty(ctx, run, timeout, w.Path); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// WorktreePaths is Worktrees without the per-worktree dirtiness check,
+// which costs a subprocess (and for jj, a snapshot) per worktree.
+func WorktreePaths(ctx context.Context, run execx.Exec, timeout time.Duration, dir string) ([]Worktree, error) {
 	if Detect(dir) == JJ {
 		workspaces, err := jjcli.Workspaces(ctx, run, timeout, dir)
 		if err != nil {
@@ -141,11 +160,7 @@ func Worktrees(ctx context.Context, run execx.Exec, timeout time.Duration, dir s
 		}
 		out := make([]Worktree, 0, len(workspaces))
 		for _, w := range workspaces {
-			dirty, err := jjcli.IsDirty(ctx, run, timeout, w.Path)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, Worktree{Name: w.Name, Path: w.Path, Dirty: dirty})
+			out = append(out, Worktree{Name: w.Name, Path: w.Path})
 		}
 		return out, nil
 	}
@@ -156,11 +171,7 @@ func Worktrees(ctx context.Context, run execx.Exec, timeout time.Duration, dir s
 	}
 	out := make([]Worktree, 0, len(paths))
 	for _, p := range paths {
-		dirty, err := gitcli.IsDirty(ctx, run, timeout, p)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, Worktree{Path: p, Dirty: dirty})
+		out = append(out, Worktree{Path: p})
 	}
 	return out, nil
 }

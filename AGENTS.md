@@ -50,6 +50,9 @@ documentation lives in README.md, not here:
   `.jj/repo`) file. Its own `--force` means "even if dirty" — unrelated to sync/clone's `--force`
 - `gh workspace worktree list [<owner>[/<repo>]]` - list worktrees for one repo, one owner, or (no
   argument) the whole workspace
+- `gh workspace completion <bash|zsh|fish>` - print a script that wraps gh's own shell completion,
+  which never forwards to extensions, so Tab reaches the hidden `__complete` command. Candidates come
+  from disk and the config only, never the network
 
 A no-op sync costs one API call per configured owner, plus one batched lookup covering every explicitly
 tracked repo outside those owners — never one `gh repo view` per such repo. On each run, for every repo

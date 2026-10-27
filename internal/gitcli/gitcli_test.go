@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,5 +294,29 @@ func TestSetRemoteURL(t *testing.T) {
 	}
 	if got := string(out); got != "https://example.invalid/new.git\n" {
 		t.Fatalf("remote url = %q, want the new url", got)
+	}
+}
+
+func TestBranches(t *testing.T) {
+	origin := initTestRepo(t)
+	if _, err := execx.Run(context.Background(), origin, "git", "branch", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := execx.Run(context.Background(), "", "git", "clone", "--quiet", "file://"+origin, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execx.Run(context.Background(), dir, "git", "branch", "local-only"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Branches(context.Background(), execx.Run, testTimeout, dir)
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	// main is both local and on origin; origin/HEAD is a symbolic ref, not
+	// a branch.
+	if want := []string{"local-only", "main", "feature"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Branches = %v, want %v", got, want)
 	}
 }

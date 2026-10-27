@@ -313,6 +313,14 @@ func TestWorktreesReportsPathsAndLiveDirtiness(t *testing.T) {
 				t.Error("a fresh worktree should not be dirty")
 			}
 
+			paths, err := WorktreePaths(ctx, execx.Run, testTimeout, dir)
+			if err != nil {
+				t.Fatalf("WorktreePaths: %v", err)
+			}
+			if len(paths) != 1 || paths[0].Path != got[0].Path || paths[0].Name != got[0].Name {
+				t.Fatalf("WorktreePaths = %v, want the same worktree Worktrees reported, %v", paths, got)
+			}
+
 			// Dirtiness is measured in the worktree itself, not read off
 			// whatever the repo last recorded.
 			writeFile(t, filepath.Join(path, "scratch.txt"), "work\n")

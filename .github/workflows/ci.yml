@@ -45,6 +45,17 @@ jobs:
             | tar -xzf - -C "$RUNNER_TEMP/jj" ./jj
           echo "$RUNNER_TEMP/jj" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/jj/jj" --version
+      # Like jj, a shell the completion-script tests need skips them when
+      # absent. macOS ships zsh, and its bash 3.2 can't load bash-completion
+      # 2, so bash is covered on Linux only.
+      - name: install shells for the completion tests
+        run: |
+          if [ "${{ runner.os }}" = Linux ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends zsh fish bash-completion
+          else
+            brew install fish
+          fi
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
