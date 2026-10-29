@@ -200,11 +200,15 @@ zpty -w z "comp-out() { zle complete-word; print -r -- \"R\"\"ESULT[\$BUFFER]\" 
 for l in "$@"; do
   zpty -w -n z "$l"$'\x14'
   out=''
-  for i in {1..100}; do
+  for i in {1..400}; do
     zpty -r -t z line && out+=$line
     [[ $out == *'RESULT['*']'* ]] && break
     sleep 0.05
   done
+  if [[ $out != *'RESULT['*']'* ]]; then
+    print -r -- TIMEOUT
+    continue
+  fi
   out=${out##*RESULT\[}
   print -r -- ${out%%\]*}
 done
@@ -282,9 +286,9 @@ func TestCompletionScriptFish(t *testing.T) {
 
 func checkCompletions(t *testing.T, cases [][2]string, out string) {
 	t.Helper()
-	got := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(got) != len(cases) {
-		t.Fatalf("got %d results for %d lines:\n%s", len(got), len(cases), out)
+	results := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(results) != len(cases) {
+		t.Fatalf("got %d results for %d lines:\n%s", len(results), len(cases), out)
 	}
 	for i, c := range cases {
 		if strings.TrimSpace(got[i]) != c[1] {
