@@ -236,8 +236,12 @@ zpty -d z
 			out := runShell(t, zsh, args...)
 			// zsh completes in place: the buffer becomes the line plus the
 			// rest of the one candidate, or the common prefix of several.
+			results := strings.Split(strings.TrimRight(out, "\n"), "\n")
+			if len(results) != len(cases) {
+				t.Fatalf("got %d results for %d lines:\n%s", len(results), len(cases), out)
+			}
 			var lines []string
-			for i, got := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			for i, got := range results {
 				lines = append(lines, strings.TrimSpace(strings.TrimPrefix(got, wordsBefore(cases[i][0]))))
 			}
 			zshCases := slicesWith(cases, len(cases)-1, [2]string{cases[len(cases)-1][0], "check"})
@@ -286,9 +290,9 @@ func TestCompletionScriptFish(t *testing.T) {
 
 func checkCompletions(t *testing.T, cases [][2]string, out string) {
 	t.Helper()
-	results := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(results) != len(cases) {
-		t.Fatalf("got %d results for %d lines:\n%s", len(results), len(cases), out)
+	got := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(got) != len(cases) {
+		t.Fatalf("got %d results for %d lines:\n%s", len(got), len(cases), out)
 	}
 	for i, c := range cases {
 		if strings.TrimSpace(got[i]) != c[1] {
