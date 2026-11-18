@@ -190,19 +190,20 @@ func TestCompletionScriptZsh(t *testing.T) {
 
 	// zsh only completes inside its line editor, so this drives an
 	// interactive zsh on a pseudo-terminal: type the line, run
-	// complete-word, and print what the buffer became. The marker is
-	// split in the source so the terminal's echo of it never matches. Setup
-	// (compinit on a slow runner) is waited out first: counting it against the
-	// first line's budget made that line time out, and its late result then
-	// answered the next line.
+	// complete-word, and print what the buffer became. The markers are
+	// split in the source so the terminal's echo of them never matches.
+	// zsh discards typed-ahead input when its line editor switches the
+	// terminal to raw mode, so nothing is typed until a key bound to a
+	// widget has answered: that proves the editor is up and raw.
 	driver := `
 zmodload zsh/zpty
 zpty z "zsh -f -i"
 zpty -w z "PS1=''; fpath=(` + fpathDir + ` \$fpath); autoload -U compinit; compinit -u -D; $SETUP"
 zpty -w z "comp-out() { zle complete-word; print -r -- \"R\"\"ESULT[\$BUFFER]\" > /dev/tty; BUFFER=''; }; zle -N comp-out; bindkey '^T' comp-out"
-zpty -w z "print -r -- \"RE\"\"ADY\" > /dev/tty"
+zpty -w z "ready-out() { print -r -- \"RE\"\"ADY\" > /dev/tty }; zle -N ready-out; bindkey '^Y' ready-out"
 out=''
-for i in {1..2400}; do
+for i in {1..1200}; do
+  (( i % 20 == 1 )) && zpty -w -n z $'\x19'
   zpty -r -t z line && out+=$line
   [[ $out == *READY* ]] && break
   sleep 0.05
@@ -210,7 +211,7 @@ done
 for l in "$@"; do
   zpty -w -n z "$l"$'\x14'
   out=''
-  for i in {1..1200}; do
+  for i in {1..400}; do
     zpty -r -t z line && out+=$line
     [[ $out == *'RESULT['*']'* ]] && break
     sleep 0.05
